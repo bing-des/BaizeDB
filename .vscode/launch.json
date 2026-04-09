@@ -1,0 +1,32 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Debug Tauri (Rust + Frontend)",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": ["run"],
+                "env": {
+                    "RUST_BACKTRACE": "1"
+                }
+            },
+            "preLaunchTask": "ui:dev",
+            "sourceLanguages": ["rust"]
+        },
+        {
+            "name": "Attach to Tauri (lldb)",
+            "type": "lldb",
+            "request": "attach",
+            "program": "${workspaceFolder}/target/debug/baizedb.exe"
+        },
+        {
+            "name": "Debug Frontend (Chrome)",
+            "type": "chrome",
+            "request": "launch",
+            "url": "http://localhost:1420",
+            "webRoot": "${workspaceFolder}",
+            "preLaunchTask": "ui:dev"
+        }
+    ]
+}

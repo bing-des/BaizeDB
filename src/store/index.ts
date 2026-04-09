@@ -1,0 +1,87 @@
+import { create } from 'zustand';
+import { persist } from 'zustand/middleware';
+import type { ConnectionConfig, Tab } from '../types';
+
+interface ConnectionState {
+  connections: ConnectionConfig[];
+  activeConnectionId: string | null;
+  connectedIds: Set<string>;
+  addConnection: (conn: ConnectionConfig) => void;
+  removeConnection: (id: string) => void;
+  setActiveConnection: (id: string | null) => void;
+  setConnected: (id: string, connected: boolean) => void;
+}
+
+export const useConnectionStore = create<ConnectionState>()(
+  persist(
+    (set) => ({
+      connections: [],
+      activeConnectionId: null,
+      connectedIds: new Set(),
+      addConnection: (conn) =>
+        set((state) => ({ connections: [...state.connections, conn] })),
+      removeConnection: (id) =>
+        set((state) => ({
+          connections: state.connections.filter((c) => c.id !== id),
+          activeConnectionId: state.activeConnectionId === id ? null : state.activeConnectionId,
+        })),
+      setActiveConnection: (id) => set({ activeConnectionId: id }),
+      setConnected: (id, connected) =>
+        set((state) => {
+          const next = new Set(state.connectedIds);
+          connected ? next.add(id) : next.delete(id);
+          return { connectedIds: next };
+        }),
+    }),
+    {
+      name: 'baizedb-connections',
+      partialize: (state) => ({ connections: state.connections }),
+    }
+  )
+);
+
+interface TabState {
+  tabs: Tab[];
+  activeTabId: string | null;
+  addTab: (tab: Tab) => void;
+  removeTab: (id: string) => void;
+  setActiveTab: (id: string) => void;
+  updateTabContent: (id: string, content: string) => void;
+}
+
+export const useTabStore = create<TabState>((set) => ({
+  tabs: [],
+  activeTabId: null,
+  addTab: (tab) =>
+    set((state) => ({ tabs: [...state.tabs, tab], activeTabId: tab.id })),
+  removeTab: (id) =>
+    set((state) => {
+      const idx = state.tabs.findIndex((t) => t.id === id);
+      const newTabs = state.tabs.filter((t) => t.id !== id);
+      let newActiveId = state.activeTabId;
+      if (state.activeTabId === id) {
+        newActiveId = newTabs.length > 0 ? newTabs[Math.max(0, idx - 1)].id : null;
+      }
+      return { tabs: newTabs, activeTabId: newActiveId };
+    }),
+  setActiveTab: (id) => set({ activeTabId: id }),
+  updateTabContent: (id, content) =>
+    set((state) => ({
+      tabs: state.tabs.map((t) => (t.id === id ? { ...t, content } : t)),
+    })),
+}));
+
+interface ThemeState {
+  theme: 'light' | 'dark' | 'system';
+  setTheme: (theme: 'light' | 'dark' | 'system') => void;
+}
+
+export const useThemeStore = create<ThemeState>()(
+  persist(
+    (set) => ({
+      theme: 'dark',
+      setTheme: (theme) => set({ theme }),
+    }),
+    { name: 'baizedb-theme' }
+  )
+);

@@ -1,0 +1,39 @@
+[package]
+name = "baizedb"
+version = "0.1.0"
+edition = "2021"
+description = "BaizeDB - A modern database management tool"
+authors = ["BaizeDB Team"]
+
+[lib]
+name = "baizedb_lib"
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-shell = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+sqlx = { version = "0.8", features = ["runtime-tokio-native-tls", "mysql", "postgres", "chrono", "uuid"] }
+redis = { version = "0.27", features = ["tokio-comp", "aio"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+anyhow = "1"
+thiserror = "2"
+once_cell = "1"
+log = "0.4"
+env_logger = "0.11"
+
+[profile.dev]
+incremental = true
+
+[profile.release]
+panic = "abort"
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true

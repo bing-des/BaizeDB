@@ -1,7 +1,8 @@
 //! MySQL 数据源实现
 
 use async_trait::async_trait;
-use sqlx::{MySqlPool, Row};
+use serde::de::value;
+use sqlx::{MySqlPool, Row, ValueRef};
 use crate::state::DbPool;
 
 use super::types::*;
@@ -207,6 +208,7 @@ impl DataSource for MySQLDataSource {
         let mut data_rows = Vec::with_capacity(rows.len());
         for row in rows {
             let mut values = Vec::with_capacity(schema.columns.len());
+
             for (i, col) in schema.columns.iter().enumerate() {
                 let category = col.data_type.category();
                 log::debug!("[MySQL源] 读取列 '{}', 分类 '{:?}'", col.name, category);
@@ -220,7 +222,9 @@ impl DataSource for MySQLDataSource {
                             v.map(|x: i32| Value::Integer(x))
                         } else if let Ok(v) = row.try_get::<Option<i64>, _>(i) {
                             v.map(|x: i64| Value::BigInt(x))
-                        } else {
+                        } else if let Ok(v) = row.try_get::<Option<u64>, _>(i) {
+                            v.map(|x: u64| Value::BigInt(x as i64))
+                        }else {
                             None
                         }
                     }
@@ -278,6 +282,16 @@ impl DataSource for MySQLDataSource {
                     DataTypeCategory::Text => {
                         if let Ok(v) = row.try_get::<Option<String>, _>(i) {
                             v.map(|x: String| Value::String(x))
+                        } else if let Ok(v) = row.try_get::<Option<Vec<u8>>, _>(i) {
+                            v.map(|x: Vec<u8>| Value::Bytes(x))
+                        } else {
+                            None
+                        }
+                    }
+                    DataTypeCategory::Json => {
+                        // MySQL JSON 类型以字符串形式返回，需要验证 JSON 格式是否正确
+                        if let Ok(v) = row.try_get::<Option<serde_json::Value>, _>(i) {
+                            v.map(|x| Value::Json(x.to_string()))
                         } else {
                             None
                         }

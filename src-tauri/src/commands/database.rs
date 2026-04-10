@@ -358,6 +358,14 @@ fn mysql_to_json(rows: &[sqlx::mysql::MySqlRow]) -> Vec<Vec<serde_json::Value>> 
                     .or_else(|_| row.try_get::<chrono::NaiveDate, _>(i).map(|v| serde_json::json!(v.to_string())))
                     .or_else(|_| row.try_get::<chrono::NaiveTime, _>(i).map(|v| serde_json::json!(v.to_string())))
                     .unwrap_or_else(|_| serde_json::json!(format!("[{}]", tname)))
+            } else if tname == "JSON"{
+                row.try_get::<serde_json::Value, _>(i)
+                    .map(|v| v)
+                    .unwrap_or_else(|_| serde_json::json!(format!("[{}]", tname)))
+            } else if tname == "BINARY" || tname == "VARBINARY" {
+                row.try_get::<Vec<u8>, _>(i)
+                    .map(|v| serde_json::json!(String::from_utf8_lossy(&v).to_string()))
+                    .unwrap_or_else(|_| serde_json::json!(format!("[{}]", tname)))
             } else {
                 row.try_get::<String, _>(i)
                     .map(|v| serde_json::json!(v))

@@ -125,7 +125,7 @@ pub struct ColumnDef {
 /// 
 /// 这是迁移的中间表示，所有数据库类型都先映射到这里，
 /// 然后再从这里映射到目标数据库类型
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum DataType {
     // 整数类型
     TinyInt,
@@ -201,6 +201,7 @@ impl DataType {
             DataType::Blob | DataType::MediumBlob | DataType::LongBlob | DataType::Bytea => {
                 DataTypeCategory::Binary
             }
+            DataType::Json | DataType::Jsonb => DataTypeCategory::Json,
             _ => DataTypeCategory::Text,
         }
     }
@@ -216,6 +217,7 @@ pub enum DataTypeCategory {
     DateTime,
     Binary,
     Text,
+    Json,
 }
 
 /// 中间层数据值（数据库无关）

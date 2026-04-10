@@ -304,6 +304,14 @@ impl DataSource for PostgreSQLDataSource {
                         } else {
                             None
                         }
+                    },
+                    DataTypeCategory::Json => {
+                        // MySQL JSON 类型以字符串形式返回，需要验证 JSON 格式是否正确
+                        if let Ok(v) = row.try_get::<Option<serde_json::Value>, _>(i) {
+                            v.map(|x: serde_json::Value| Value::Json(x.to_string()))
+                        } else {
+                            None
+                        }
                     }
                 };
                 values.push(value.unwrap_or(Value::Null));

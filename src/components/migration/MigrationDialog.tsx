@@ -11,8 +11,8 @@ interface Props {
 const defaultForm: Omit<MigrationInput, 'source_connection_id' | 'target_connection_id' | 'source_database'> = {
   target_database: undefined,
   tables: undefined,
-  migrate_structure: true,
-  migrate_data: true,
+  migrate_structure: false,
+  migrate_data: false,
   truncate_target: false,
   batch_size: 1000,
 };
@@ -371,21 +371,19 @@ export default function MigrationDialog({ onClose }: Props) {
             </div>
             <div>
               <label className="block text-xs font-medium text-[var(--text-muted)] mb-1.5 uppercase tracking-wider">
-                目标数据库（可选）
+                目标数据库
               </label>
-              <input
+              <select
                 className="input-field"
-                list="target-db-list"
-                placeholder={form.sourceDatabase || '留空则使用源数据库名'}
-                value={form.target_database || ''}
-                onChange={e => setForm({ ...form, target_database: e.target.value || undefined })}
+                value={form.target_database || '__auto__'}
+                onChange={e => setForm({ ...form, target_database: e.target.value === '__auto__' ? undefined : e.target.value || undefined })}
                 disabled={!form.targetConnectionId || loading}
-              />
-              <datalist id="target-db-list">
+              >
+                <option value="__auto__">自动（使用源数据库名）</option>
                 {targetDatabases.map(db => (
-                  <option key={db} value={db} />
+                  <option key={db} value={db}>{db}</option>
                 ))}
-              </datalist>
+              </select>
             </div>
           </div>
 

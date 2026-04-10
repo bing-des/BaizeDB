@@ -249,7 +249,7 @@ impl PostgreSQLTarget {
                     };
                     
                     let data_type = Self::postgres_type_to_intermediate(&data_type, type_info.as_deref());
-                    
+                    log::debug!("Processing column: {} with type: {:?} type_info: {:?}", name, data_type, type_info);
                     ColumnDef {
                         name,
                         data_type,
@@ -439,22 +439,15 @@ impl DataTarget for PostgreSQLTarget {
         // 先获取目标表的实际架构（连接池已连到目标数据库）
         let target_schema = self.get_target_table_schema(database, table).await?;
         
-        // 决定使用哪个架构进行类型绑定：优先使用目标架构，否则使用源架构
-        let use_target_schema = target_schema.is_some();
-        let target_columns = if let Some(ref ts) = target_schema {
-            &ts.columns
-        } else {
-            &schema.columns
-        };
+        // 构建目标列名 → 列定义的映射（按列名匹配，而非按位置索引）
+        // 这样即使源表和目标表的列顺序不同，也能正确获取目标列类型
+        let target_col_map: std::collections::HashMap<String, &ColumnDef> = 
+            target_schema.as_ref()
+                .map(|ts| ts.columns.iter().map(|c| (c.name.clone(), c)).collect())
+                .unwrap_or_default();
         
-        log::debug!("[迁移] 表 {} - 目标表存在: {}, 目标列数: {}, 源列数: {}", 
-            table, use_target_schema, target_columns.len(), schema.columns.len());
-        
-        // 确保列数量匹配（如果使用目标架构但列数不匹配，可能有问题，但继续尝试）
-        if use_target_schema && target_columns.len() != schema.columns.len() {
-            log::warn!("目标表列数 ({}) 与源表列数 ({}) 不匹配，使用源表列顺序", 
-                target_columns.len(), schema.columns.len());
-        }
+        log::debug!("[迁移] 表 {} - 目标表存在: {}, 目标列映射数: {}, 源列数: {}", 
+            table, target_schema.is_some(), target_col_map.len(), schema.columns.len());
 
         // 构建 INSERT 语句模板（列名加引号防止关键字冲突）
         let column_names: Vec<String> = schema.columns.iter().map(|c| format!("\"{}\"", c.name)).collect();
@@ -474,13 +467,9 @@ impl DataTarget for PostgreSQLTarget {
             let mut args = PgArguments::default();
             
             // 同时遍历列和值，确保类型正确绑定
-            for (i, (col, value)) in schema.columns.iter().zip(row.values.iter()).enumerate() {
-                // 获取目标列类型（如果存在且索引有效）
-                let target_col = if use_target_schema && i < target_columns.len() {
-                    Some(&target_columns[i])
-                } else {
-                    None
-                };
+            for (col, value) in schema.columns.iter().zip(row.values.iter()) {
+                // 按列名查找目标列（而非按位置索引），避免列顺序不一致导致类型绑定错误
+                let target_col = target_col_map.get(&col.name).copied();
                 
                 // 决定使用哪个数据类型进行绑定：优先目标列类型，否则使用源列类型
                 let bind_data_type = if let Some(tc) = target_col {
@@ -488,15 +477,7 @@ impl DataTarget for PostgreSQLTarget {
                 } else {
                     &col.data_type
                 };
-                
-                log::debug!(
-                    "[PG绑定] 表={} 列[{}]='{}' 源类型={:?} 目标类型={:?} 绑定类型={:?} 值={:?}",
-                    table, i, col.name, col.data_type,
-                    target_col.map(|tc| &tc.data_type),
-                    bind_data_type,
-                    value
-                );
-                
+                log::debug!("[PG 目标] 处理列: {}, 类型: {:?}", col.name, bind_data_type);
                 match value {
                     Value::Null => {
                         // NULL 值需要根据目标列类型绑定正确的 Option<T>::None
@@ -933,6 +914,22 @@ impl DataTarget for PostgreSQLTarget {
                                     Err(_) => {
                                         log::warn!("[PG目标] 二进制数据无法解码为文本，降级为 NULL");
                                         args.add::<Option<String>>(None)
+                                    }
+                                }
+                            }
+                            DataType::BigInt => {
+                                // 二进制 → BigInt：尝试解析为整数
+                                match String::from_utf8(b.clone()) {
+                                    Ok(s) => match s.parse::<i64>() {
+                                        Ok(num) => args.add(num),
+                                        Err(_) => {
+                                            log::warn!("[PG目标] 二进制数据无法解析为 BigInt，降级为 NULL");
+                                            args.add::<Option<i64>>(None)
+                                        }
+                                    },
+                                    Err(_) => {
+                                        log::warn!("[PG目标] 二进制数据无法解码为文本，降级为 NULL");
+                                        args.add::<Option<i64>>(None)
                                     }
                                 }
                             }

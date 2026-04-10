@@ -2,6 +2,7 @@ use thiserror::Error;
 use serde::Serialize;
 
 #[derive(Error, Debug, Serialize)]
+#[allow(dead_code)]
 pub enum AppError {
     #[error("Database error: {0}")]
     Database(String),
@@ -29,4 +30,5 @@ impl From<serde_json::Error> for AppError {
     }
 }
 
+#[allow(dead_code)]
 pub type Result<T> = std::result::Result<T, AppError>;

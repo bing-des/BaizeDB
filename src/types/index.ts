@@ -83,3 +83,34 @@ export interface Tab {
   redisDbIndex?: number;
   redisKey?: string;
 }
+
+export interface MigrationInput {
+  source_connection_id: string;
+  target_connection_id: string;
+  source_database: string;
+  target_database?: string;
+  tables?: string[];
+  migrate_structure?: boolean;
+  migrate_data?: boolean;
+  truncate_target?: boolean;
+  batch_size?: number;
+}
+
+export interface MigrationProgress {
+  migration_id: string;
+  current_table: string;
+  total_tables: number;
+  tables_completed: number;
+  rows_migrated: number;
+  current_table_rows: number;
+  status: MigrationStatus;
+  error?: string;
+}
+
+export type MigrationStatus =
+  | 'NotStarted'
+  | 'Preparing'
+  | 'MigratingStructure'
+  | 'MigratingData'
+  | 'Completed'
+  | 'Failed';

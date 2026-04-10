@@ -41,6 +41,7 @@ impl Default for ConnectionConfig {
     }
 }
 
+#[derive(Clone)]
 pub enum DbPool {
     MySQL(sqlx::MySqlPool),
     PostgreSQL(sqlx::PgPool),

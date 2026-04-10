@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
+import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import type {
   ConnectionConfig,
   DatabaseInfo,
@@ -10,6 +11,8 @@ import type {
   RedisDbInfo,
   RedisScanResult,
   RedisKeyValue,
+  MigrationInput,
+  MigrationProgress,
 } from '../types';
 
 export type NewConnectionInput = Omit<ConnectionConfig, 'id'>;
@@ -63,4 +66,15 @@ export const queryApi = {
     invoke<QueryResult>('execute_query', { connectionId, sql, database: database ?? null }),
   executePaged: (connectionId: string, sql: string, page: number, pageSize: number, database?: string) =>
     invoke<QueryResult>('execute_query_paged', { input: { connectionId, sql, page, pageSize, database: database ?? null } }),
+};
+
+export const migrationApi = {
+  /** 启动迁移任务，返回 migration_id，进度通过事件推送 */
+  startMigration: (input: MigrationInput) =>
+    invoke<string>('start_migration_v2', { input }),
+  /** 监听迁移进度事件，返回取消监听函数 */
+  onProgress: (callback: (progress: MigrationProgress) => void): Promise<UnlistenFn> =>
+    listen<MigrationProgress>('migration-progress', (event) => {
+      callback(event.payload);
+    }),
 };

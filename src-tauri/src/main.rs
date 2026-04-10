@@ -9,7 +9,8 @@ use state::AppState;
 use tauri::Manager;
 
 fn main() {
-    env_logger::init();
+    // 默认 debug 级别，可通过 RUST_LOG 环境变量覆盖
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("debug")).init();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
@@ -34,6 +35,7 @@ fn main() {
             commands::redis::redis_get_key,
             commands::redis::redis_set_key,
             commands::redis::redis_del_key,
+            commands::migration::start_migration_v2,
         ])
         .setup(|app| {
             let window = app.get_webview_window("main").unwrap();

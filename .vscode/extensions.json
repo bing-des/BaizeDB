@@ -1,8 +1,0 @@
-{
-    "recommendations": [
-        "vadimcn.vscode-lldb",
-        "rust-lang.rust-analyzer",
-        "ms-vscode.vscode-typescript-next",
-        "bradlc.vscode-tailwindcss"
-    ]
-}

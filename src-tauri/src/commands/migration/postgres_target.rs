@@ -489,7 +489,7 @@ impl DataTarget for PostgreSQLTarget {
                     &col.data_type
                 };
                 
-                log::info!(
+                log::debug!(
                     "[PG绑定] 表={} 列[{}]='{}' 源类型={:?} 目标类型={:?} 绑定类型={:?} 值={:?}",
                     table, i, col.name, col.data_type,
                     target_col.map(|tc| &tc.data_type),

@@ -84,6 +84,19 @@ export interface Tab {
   redisKey?: string;
 }
 
+export interface TableMapping {
+  source_table: string;
+  target_table?: string;
+  column_mappings?: ColumnMapping[];
+}
+
+export interface ColumnMapping {
+  source_column: string;
+  target_column?: string;
+  /** 是否忽略此列（不迁移） */
+  ignored?: boolean;
+}
+
 export interface MigrationInput {
   source_connection_id: string;
   target_connection_id: string;
@@ -94,6 +107,7 @@ export interface MigrationInput {
   migrate_data?: boolean;
   truncate_target?: boolean;
   batch_size?: number;
+  table_mappings?: TableMapping[];
 }
 
 export interface MigrationProgress {

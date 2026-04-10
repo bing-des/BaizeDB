@@ -108,6 +108,47 @@ impl PostgreSQLTarget {
         Self::parse_length(type_info)
     }
 
+    /// 判断默认值是否是 PG 兼容的
+    /// MySQL 的默认值可能包含 PG 不兼容的语法，需要过滤掉
+    fn is_pg_compatible_default(default: &str) -> bool {
+        let d = default.trim();
+        // 空值跳过
+        if d.is_empty() { return false; }
+        // 包含 ON UPDATE 的跳过（MySQL 特有）
+        if d.contains("ON UPDATE") { return false; }
+        // PG 已知的函数/关键字
+        let upper = d.to_uppercase();
+        if upper == "NULL" { return true; }
+        if upper == "CURRENT_TIMESTAMP" { return true; }
+        if upper == "CURRENT_DATE" { return true; }
+        if upper == "CURRENT_TIME" { return true; }
+        if upper == "TRUE" || upper == "FALSE" { return true; }
+        // 纯数字（整数或小数，含负号）
+        if d.starts_with('-') || d.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false) {
+            // 确保是合法数字
+            return d.parse::<f64>().is_ok() || d.parse::<i64>().is_ok();
+        }
+        // 单引号包裹的字符串值
+        if d.starts_with('\'') && d.ends_with('\'') { return true; }
+        // 其他情况（如 uuid()、0x...、表达式等）一律跳过
+        // 包含特殊字符的（如十六进制 0x、函数调用含括号等）
+        if d.starts_with("0x") || d.starts_with("0X") { return false; }
+        if upper.starts_with("UUID()") { return false; }
+        if upper.starts_with("GEN_RANDOM_UUID()") { return true; }
+        if upper.starts_with("NOW()") { return true; }
+        // 包含括号的函数调用（可能是 PG 不认识的函数）
+        // 只允许已知的 PG 函数
+        if d.contains('(') && d.contains(')') {
+            // 已知安全的 PG 函数
+            return upper.starts_with("NOW(") 
+                || upper.starts_with("CURRENT_TIMESTAMP(")
+                || upper.starts_with("GEN_RANDOM_UUID(")
+                || upper.starts_with("CURRENT_DATE(")
+                || upper.starts_with("CURRENT_TIME(");
+        }
+        false
+    }
+
     /// 尝试多种格式将字符串解析为 NaiveDateTime
     fn parse_naive_datetime(s: &str) -> Option<chrono::NaiveDateTime> {
         // 常见日期时间格式列表
@@ -316,16 +357,31 @@ impl DataTarget for PostgreSQLTarget {
     }
 
     async fn create_table(&self, database: &str, schema: &TableSchema) -> Result<(), String> {
+        // 过滤掉无法映射的列（Unknown 类型没有 PG 对应）
         let column_defs: Vec<String> = schema.columns.iter().map(|col| {
             let pg_type = Self::intermediate_to_postgres_type(&col.data_type);
             let null_clause = if col.nullable { "" } else { " NOT NULL" };
-            let default_clause = col.default_value.as_ref().map(|d| format!(" DEFAULT {}", d)).unwrap_or_default();
-            format!("{} {}{}{}", col.name, pg_type, null_clause, default_clause)
+            // default_value 可能包含 MySQL 特有语法（如 CURRENT_TIMESTAMP ON UPDATE），
+            // PG 不兼容，所以跳过包含 ON UPDATE 的默认值
+            // default_value 处理：只保留 PG 兼容的默认值
+            // MySQL 的默认值可能包含 PG 不兼容的语法（如 uuid()、0x...、0000-00-00 等）
+            // 这些会导致 CREATE TABLE 语法错误
+            let default_clause = col.default_value.as_ref()
+                .filter(|d| Self::is_pg_compatible_default(d))
+                .map(|d| format!(" DEFAULT {}", d))
+                .unwrap_or_default();
+            format!("\"{}\" {}{}{}", col.name, pg_type, null_clause, default_clause)
         }).collect();
+
+        // 如果列定义为空（所有列都被忽略），跳过建表
+        if column_defs.is_empty() {
+            log::warn!("[PG目标] 表 {} 没有列定义，跳过建表", schema.name);
+            return Ok(());
+        }
 
         let primary_keys: Vec<String> = schema.columns.iter()
             .filter(|c| c.is_primary_key)
-            .map(|c| c.name.clone())
+            .map(|c| format!("\"{}\"", c.name))
             .collect();
 
         let pk_clause = if !primary_keys.is_empty() {
@@ -334,10 +390,12 @@ impl DataTarget for PostgreSQLTarget {
             String::new()
         };
 
-        // 使用 public.table 全限定名（连接池已连到目标数据库）
-        let create_table_sql = format!("CREATE TABLE IF NOT EXISTS public.{} ({}{});", 
+        // 使用 public."table" 全限定名（连接池已连到目标数据库）
+        let create_table_sql = format!("CREATE TABLE IF NOT EXISTS public.\"{}\" ({}{});", 
             schema.name, column_defs.join(", "), pk_clause);
         
+        log::info!("[PG目标] 建表 SQL: {}", create_table_sql);
+
         sqlx::query(&create_table_sql)
             .execute(&self.pool)
             .await
@@ -357,7 +415,7 @@ impl DataTarget for PostgreSQLTarget {
     ) -> Result<(), String> {
         let escaped_comment = comment.replace("'", "''");
         // 使用 public.table 全限定名
-        let comment_sql = format!("COMMENT ON COLUMN public.{}.{} IS '{}';", table, column, escaped_comment);
+        let comment_sql = format!("COMMENT ON COLUMN public.\"{}\".\"{}\" IS '{}';", table, column, escaped_comment);
         sqlx::query(&comment_sql)
             .execute(&self.pool)
             .await
@@ -398,12 +456,12 @@ impl DataTarget for PostgreSQLTarget {
                 target_columns.len(), schema.columns.len());
         }
 
-        // 构建 INSERT 语句模板（使用源表列名，因为 INSERT 语句必须匹配表定义）
-        let column_names: Vec<String> = schema.columns.iter().map(|c| c.name.clone()).collect();
+        // 构建 INSERT 语句模板（列名加引号防止关键字冲突）
+        let column_names: Vec<String> = schema.columns.iter().map(|c| format!("\"{}\"", c.name)).collect();
         let placeholders: Vec<String> = (1..=column_names.len()).map(|i| format!("${}", i)).collect();
         // 使用 public.table 全限定名
         let insert_sql = format!(
-            "INSERT INTO public.{} ({}) VALUES ({}) ON CONFLICT DO NOTHING",
+            "INSERT INTO public.\"{}\" ({}) VALUES ({}) ON CONFLICT DO NOTHING",
             table,
             column_names.join(", "),
             placeholders.join(", ")
@@ -431,7 +489,7 @@ impl DataTarget for PostgreSQLTarget {
                     &col.data_type
                 };
                 
-                log::debug!(
+                log::info!(
                     "[PG绑定] 表={} 列[{}]='{}' 源类型={:?} 目标类型={:?} 绑定类型={:?} 值={:?}",
                     table, i, col.name, col.data_type,
                     target_col.map(|tc| &tc.data_type),
@@ -449,7 +507,7 @@ impl DataTarget for PostgreSQLTarget {
                             DataType::BigInt | DataType::BigSerial => args.add::<Option<i64>>(None),
                             DataType::Float | DataType::Real => args.add::<Option<f32>>(None),
                             DataType::Double => args.add::<Option<f64>>(None),
-                            DataType::Decimal { .. } | DataType::Numeric { .. } => args.add::<Option<String>>(None),
+                            DataType::Decimal { .. } | DataType::Numeric { .. } => args.add::<Option<f64>>(None),
                             DataType::Char { .. } | DataType::VarChar { .. } | DataType::Text | 
                             DataType::MediumText | DataType::LongText => args.add::<Option<String>>(None),
                             DataType::Boolean => args.add::<Option<bool>>(None),
@@ -471,39 +529,153 @@ impl DataTarget for PostgreSQLTarget {
                             DataType::Unknown(_) => args.add::<Option<String>>(None),
                         }
                     }
-                    Value::Bool(b) => args.add(*b),
+                    Value::Bool(b) => {
+                        match bind_data_type {
+                            DataType::Json | DataType::Jsonb => {
+                                args.add(serde_json::Value::Bool(*b))
+                            }
+                            DataType::Text | DataType::MediumText | DataType::LongText => {
+                                args.add(b.to_string())
+                            }
+                            DataType::TinyInt | DataType::SmallInt => args.add(if *b { 1i16 } else { 0 }),
+                            DataType::Integer | DataType::Serial => args.add(if *b { 1i32 } else { 0 }),
+                            DataType::BigInt | DataType::BigSerial => args.add(if *b { 1i64 } else { 0 }),
+                            DataType::VarChar { .. } | DataType::Char { .. } => args.add(b.to_string()),
+                            _ => args.add(*b),
+                        }
+                    }
                     Value::TinyInt(i) => {
-                        // 根据目标列类型提升，避免二进制格式不匹配
+                        // 根据目标列类型提升或转换，避免二进制格式不匹配
                         match bind_data_type {
                             DataType::Boolean => args.add(*i != 0),
                             DataType::SmallInt => args.add(*i as i16),
-                            DataType::Integer => args.add(*i as i32),
-                            DataType::BigInt | DataType::Serial | DataType::BigSerial => args.add(*i as i64),
+                            DataType::Integer | DataType::Serial => args.add(*i as i32),
+                            DataType::BigInt | DataType::BigSerial => args.add(*i as i64),
+                            DataType::Float | DataType::Real => args.add(*i as f32),
+                            DataType::Double => args.add(*i as f64),
+                            DataType::Decimal { .. } | DataType::Numeric { .. } => args.add(*i as f64),
+                            DataType::Json | DataType::Jsonb => {
+                                args.add(serde_json::Value::Number((*i as i64).into()))
+                            }
+                            DataType::Text | DataType::MediumText | DataType::LongText |
+                            DataType::VarChar { .. } | DataType::Char { .. } => {
+                                args.add(i.to_string())
+                            }
                             _ => args.add(*i as i16), // PostgreSQL 没有 tinyint，默认用 smallint
                         }
                     }
                     Value::SmallInt(i) => {
                         match bind_data_type {
-                            DataType::Integer => args.add(*i as i32),
-                            DataType::BigInt | DataType::Serial | DataType::BigSerial => args.add(*i as i64),
+                            DataType::Integer | DataType::Serial => args.add(*i as i32),
+                            DataType::BigInt | DataType::BigSerial => args.add(*i as i64),
+                            DataType::Float | DataType::Real => args.add(*i as f32),
+                            DataType::Double => args.add(*i as f64),
+                            DataType::Decimal { .. } | DataType::Numeric { .. } => args.add(*i as f64),
+                            DataType::Json | DataType::Jsonb => {
+                                args.add(serde_json::Value::Number((*i as i64).into()))
+                            }
+                            DataType::Text | DataType::MediumText | DataType::LongText |
+                            DataType::VarChar { .. } | DataType::Char { .. } => {
+                                args.add(i.to_string())
+                            }
+                            DataType::Boolean => args.add(*i != 0),
                             _ => args.add(*i),
                         }
                     }
                     Value::Integer(i) => {
                         match bind_data_type {
-                            DataType::BigInt | DataType::Serial | DataType::BigSerial => args.add(*i as i64),
+                            DataType::BigInt | DataType::BigSerial => args.add(*i as i64),
                             DataType::SmallInt => args.add(*i as i16),
+                            DataType::Float | DataType::Real => args.add(*i as f32),
+                            DataType::Double => args.add(*i as f64),
+                            DataType::Decimal { .. } | DataType::Numeric { .. } => args.add(*i as f64),
+                            DataType::Json | DataType::Jsonb => {
+                                args.add(serde_json::Value::Number((*i as i64).into()))
+                            }
+                            DataType::Text | DataType::MediumText | DataType::LongText |
+                            DataType::VarChar { .. } | DataType::Char { .. } => {
+                                args.add(i.to_string())
+                            }
+                            DataType::Boolean => args.add(*i != 0),
                             _ => args.add(*i),
                         }
                     }
-                    Value::BigInt(i) => args.add(*i),
+                    Value::BigInt(i) => {
+                        match bind_data_type {
+                            DataType::SmallInt => args.add(*i as i16),
+                            DataType::Integer | DataType::Serial => args.add(*i as i32),
+                            DataType::Float | DataType::Real => args.add(*i as f32),
+                            DataType::Double => args.add(*i as f64),
+                            DataType::Decimal { .. } | DataType::Numeric { .. } => args.add(*i as f64),
+                            DataType::Json | DataType::Jsonb => {
+                                // 源值是 bigint，但目标列是 json → 转为 JSON number
+                                args.add(serde_json::Value::Number((*i).into()))
+                            }
+                            DataType::Text | DataType::MediumText | DataType::LongText |
+                            DataType::VarChar { .. } | DataType::Char { .. } => {
+                                args.add(i.to_string())
+                            }
+                            DataType::Boolean => args.add(*i != 0),
+                            DataType::Uuid => {
+                                // bigint → uuid 没有合理转换，降级 NULL
+                                log::warn!("[PG目标] BigInt 值 {} 无法转换为 UUID，降级为 NULL", i);
+                                args.add::<Option<uuid::Uuid>>(None)
+                            }
+                            DataType::Date | DataType::Time | DataType::DateTime { .. } | 
+                            DataType::Timestamp { .. } => {
+                                // bigint → 时间类型无法转换，降级 NULL
+                                log::warn!("[PG目标] BigInt 值 {} 无法转换为时间类型（目标: {:?}），降级为 NULL", i, bind_data_type);
+                                args.add::<Option<String>>(None)
+                            }
+                            DataType::Binary { .. } | DataType::VarBinary { .. } | 
+                            DataType::Blob | DataType::MediumBlob | DataType::LongBlob | DataType::Bytea => {
+                                log::warn!("[PG目标] BigInt 值 {} 无法转换为二进制类型，降级为 NULL", i);
+                                args.add::<Option<Vec<u8>>>(None)
+                            }
+                            _ => args.add(*i),
+                        }
+                    }
                     Value::Float(f) => {
                         match bind_data_type {
                             DataType::Double => args.add(*f as f64),
+                            DataType::Decimal { .. } | DataType::Numeric { .. } => args.add(*f as f64),
+                            DataType::Json | DataType::Jsonb => {
+                                let v = serde_json::Number::from_f64(*f as f64)
+                                    .map(serde_json::Value::Number)
+                                    .unwrap_or(serde_json::Value::String(f.to_string()));
+                                args.add(v)
+                            }
+                            DataType::Text | DataType::MediumText | DataType::LongText |
+                            DataType::VarChar { .. } | DataType::Char { .. } => {
+                                args.add(f.to_string())
+                            }
+                            DataType::Integer | DataType::Serial => args.add(f.trunc() as i32),
+                            DataType::BigInt | DataType::BigSerial => args.add(f.trunc() as i64),
+                            DataType::SmallInt => args.add(f.trunc() as i16),
                             _ => args.add(*f),
                         }
                     }
-                    Value::Double(d) => args.add(*d),
+                    Value::Double(d) => {
+                        match bind_data_type {
+                            DataType::Float | DataType::Real => args.add(*d as f32),
+                            DataType::Decimal { .. } | DataType::Numeric { .. } => args.add(*d),
+                            DataType::Json | DataType::Jsonb => {
+                                let v = serde_json::Number::from_f64(*d)
+                                    .map(serde_json::Value::Number)
+                                    .unwrap_or(serde_json::Value::String(d.to_string()));
+                                args.add(v)
+                            }
+                            DataType::Text | DataType::MediumText | DataType::LongText |
+                            DataType::VarChar { .. } | DataType::Char { .. } => {
+                                args.add(d.to_string())
+                            }
+                            DataType::Integer | DataType::Serial => args.add(d.trunc() as i32),
+                            DataType::BigInt | DataType::BigSerial => args.add(d.trunc() as i64),
+                            DataType::SmallInt => args.add(d.trunc() as i16),
+                            DataType::Boolean => args.add(*d != 0.0),
+                            _ => args.add(*d),
+                        }
+                    }
                     Value::Decimal(s) => {
                         // 根据目标列类型决定如何绑定十进制字符串
                         match bind_data_type {
@@ -517,42 +689,60 @@ impl DataTarget for PostgreSQLTarget {
                                         DataType::BigInt => args.add(i),
                                         _ => unreachable!(),
                                     }
-                                } else {
-                                    // 如果包含小数点，尝试解析为浮点数然后截断（警告）
-                                    if let Ok(f) = s.parse::<f64>() {
-                                        let i = f.trunc() as i64;
-                                        log::warn!("十进制值 '{}' 被截断为整数 {}", s, i);
-                                        match bind_data_type {
-                                            DataType::TinyInt => args.add(i as i16),
-                                            DataType::SmallInt => args.add(i as i16),
-                                            DataType::Integer => args.add(i as i32),
-                                            DataType::BigInt => args.add(i),
-                                            _ => unreachable!(),
-                                        }
-                                    } else {
-                                        return Err(format!("无法将字符串 '{}' 解析为目标整数类型 {:?}", s, bind_data_type));
+                                } else if let Ok(f) = s.parse::<f64>() {
+                                    // 包含小数点，截断为整数（警告）
+                                    let i = f.trunc() as i64;
+                                    log::warn!("十进制值 '{}' 被截断为整数 {}", s, i);
+                                    match bind_data_type {
+                                        DataType::TinyInt => args.add(i as i16),
+                                        DataType::SmallInt => args.add(i as i16),
+                                        DataType::Integer => args.add(i as i32),
+                                        DataType::BigInt => args.add(i),
+                                        _ => unreachable!(),
                                     }
+                                } else {
+                                    // PG 二进制协议不接受 text → integer 转换，降级为 NULL
+                                    log::warn!("[PG目标] Decimal 值 '{}' 无法解析为数字，降级为 NULL", s);
+                                    args.add::<Option<i64>>(None)
                                 }
                             }
                             DataType::Float | DataType::Real => {
                                 if let Ok(f) = s.parse::<f32>() {
                                     args.add(f)
+                                } else if let Ok(f) = s.parse::<f64>() {
+                                    args.add(f as f32)
                                 } else {
-                                    return Err(format!("无法将字符串 '{}' 解析为浮点数", s));
+                                    log::warn!("[PG目标] Decimal 值 '{}' 无法解析为浮点数，降级为 NULL", s);
+                                    args.add::<Option<f32>>(None)
                                 }
                             }
                             DataType::Double => {
                                 if let Ok(f) = s.parse::<f64>() {
                                     args.add(f)
                                 } else {
-                                    return Err(format!("无法将字符串 '{}' 解析为双精度浮点数", s));
+                                    log::warn!("[PG目标] Decimal 值 '{}' 无法解析为双精度，降级为 NULL", s);
+                                    args.add::<Option<f64>>(None)
                                 }
                             }
                             DataType::Decimal { .. } | DataType::Numeric { .. } => {
-                                // 对于 PostgreSQL 的 decimal/numeric，直接传递字符串，PostgreSQL 会处理转换
-                                args.add(s.clone())
+                                // PG 二进制协议不接受 text → numeric 转换
+                                // 解析为 f64，PG 会自动做 double precision → numeric 隐式转换
+                                if let Ok(f) = s.parse::<f64>() {
+                                    args.add(f)
+                                } else {
+                                    log::warn!("[PG目标] Decimal 值 '{}' 无法解析为数值，降级为 NULL", s);
+                                    args.add::<Option<f64>>(None)
+                                }
                             }
-                            _ => args.add(s.clone()), // 其他类型直接作为字符串传递
+                            _ => {
+                                // 其他未知类型，尝试解析为 f64 或 NULL
+                                if let Ok(f) = s.parse::<f64>() {
+                                    args.add(f)
+                                } else {
+                                    log::warn!("[PG目标] Decimal 值 '{}' 无法解析，降级为 NULL", s);
+                                    args.add::<Option<f64>>(None)
+                                }
+                            }
                         }
                     }
                     Value::String(s) => {
@@ -563,7 +753,18 @@ impl DataTarget for PostgreSQLTarget {
                                 let parsed = Self::parse_naive_datetime(&s);
                                 match parsed {
                                     Some(dt) => args.add::<chrono::NaiveDateTime>(dt),
-                                    None => return Err(format!("无法将字符串 '{}' 解析为时间戳 (目标列类型: {:?})", s, bind_data_type)),
+                                    None => {
+                                        // 回退：尝试解析为纯日期，补 00:00:00
+                                        if let Ok(d) = chrono::NaiveDate::parse_from_str(&s, "%Y-%m-%d") {
+                                            let dt = d.and_hms_opt(0, 0, 0).unwrap();
+                                            log::warn!("[PG目标] 字符串 '{}' 无时间部分，转为时间戳 {} (目标列类型: {:?})", s, dt, bind_data_type);
+                                            args.add::<chrono::NaiveDateTime>(dt)
+                                        } else {
+                                            // PG 二进制协议不接受 text → timestamp 转换，降级为 NULL
+                                            log::warn!("[PG目标] 字符串 '{}' 无法解析为时间戳，降级为 NULL (目标列类型: {:?})", s, bind_data_type);
+                                            args.add::<Option<chrono::NaiveDateTime>>(None)
+                                        }
+                                    }
                                 }
                             }
                             DataType::Timestamp { with_tz: true, .. } => {
@@ -575,24 +776,46 @@ impl DataTarget for PostgreSQLTarget {
                                     // 从 NaiveDateTime 转为 DateTime<Utc>（假设为 UTC）
                                     let utc = chrono::Utc.from_utc_datetime(&naive);
                                     args.add::<chrono::DateTime<chrono::Utc>>(utc)
+                                } else if let Ok(d) = chrono::NaiveDate::parse_from_str(&s, "%Y-%m-%d") {
+                                    // 回退：纯日期补 00:00:00 UTC
+                                    let naive = d.and_hms_opt(0, 0, 0).unwrap();
+                                    let utc = chrono::Utc.from_utc_datetime(&naive);
+                                    log::warn!("[PG目标] 字符串 '{}' 无时间部分，转为带时区时间戳 {} (目标列类型: {:?})", s, utc, bind_data_type);
+                                    args.add::<chrono::DateTime<chrono::Utc>>(utc)
                                 } else {
-                                    return Err(format!("无法将字符串 '{}' 解析为带时区的时间戳", s));
+                                    // PG 二进制协议不接受 text → timestamptz 转换，降级为 NULL
+                                    log::warn!("[PG目标] 字符串 '{}' 无法解析为带时区时间戳，降级为 NULL", s);
+                                    args.add::<Option<chrono::DateTime<chrono::Utc>>>(None)
                                 }
                             }
                             DataType::Date => {
-                                // 尝试解析为日期
+                                // 尝试解析为日期（支持多种格式）
                                 if let Ok(d) = chrono::NaiveDate::parse_from_str(&s, "%Y-%m-%d") {
                                     args.add::<chrono::NaiveDate>(d)
+                                } else if let Ok(d) = chrono::NaiveDate::parse_from_str(&s, "%Y/%m/%d") {
+                                    args.add::<chrono::NaiveDate>(d)
+                                } else if let Some(dt) = Self::parse_naive_datetime(&s) {
+                                    // 从 datetime 中提取日期
+                                    args.add::<chrono::NaiveDate>(dt.date())
                                 } else {
-                                    return Err(format!("无法将字符串 '{}' 解析为日期", s));
+                                    // PG 二进制协议不接受 text → date 转换，降级为 NULL
+                                    log::warn!("[PG目标] 字符串 '{}' 无法解析为日期，降级为 NULL", s);
+                                    args.add::<Option<chrono::NaiveDate>>(None)
                                 }
                             }
                             DataType::Time => {
-                                // 尝试解析为时间（支持带毫秒和不带毫秒）
+                                // 尝试解析为时间（支持多种格式）
                                 if let Ok(t) = chrono::NaiveTime::parse_from_str(&s, "%H:%M:%S%.f") {
                                     args.add::<chrono::NaiveTime>(t)
+                                } else if let Ok(t) = chrono::NaiveTime::parse_from_str(&s, "%H:%M") {
+                                    args.add::<chrono::NaiveTime>(t)
+                                } else if let Some(dt) = Self::parse_naive_datetime(&s) {
+                                    // 从 datetime 中提取时间
+                                    args.add::<chrono::NaiveTime>(dt.time())
                                 } else {
-                                    return Err(format!("无法将字符串 '{}' 解析为时间", s));
+                                    // PG 二进制协议不接受 text → time 转换，降级为 NULL
+                                    log::warn!("[PG目标] 字符串 '{}' 无法解析为时间，降级为 NULL", s);
+                                    args.add::<Option<chrono::NaiveTime>>(None)
                                 }
                             }
                             DataType::Boolean => {
@@ -600,7 +823,11 @@ impl DataTarget for PostgreSQLTarget {
                                 match s.to_lowercase().as_str() {
                                     "true" | "1" | "yes" | "on" => args.add(true),
                                     "false" | "0" | "no" | "off" | "" => args.add(false),
-                                    _ => return Err(format!("无法将字符串 '{}' 解析为布尔值", s)),
+                                    _ => {
+                                        // PG 二进制协议不接受 text → boolean 转换
+                                        log::warn!("[PG目标] 字符串 '{}' 无法解析为布尔值，降级为 NULL", s);
+                                        args.add::<Option<bool>>(None)
+                                    }
                                 }
                             }
                             DataType::TinyInt | DataType::SmallInt | DataType::Integer | DataType::BigInt |
@@ -613,27 +840,49 @@ impl DataTarget for PostgreSQLTarget {
                                         DataType::BigInt | DataType::BigSerial => args.add(i),
                                         _ => unreachable!(),
                                     }
+                                } else if let Ok(f) = s.parse::<f64>() {
+                                    // 尝试作为浮点数解析后截断
+                                    let i = f.trunc() as i64;
+                                    log::warn!("[PG目标] 字符串 '{}' 解析为浮点后截断为整数 {}", s, i);
+                                    match bind_data_type {
+                                        DataType::TinyInt | DataType::SmallInt => args.add(i as i16),
+                                        DataType::Integer | DataType::Serial => args.add(i as i32),
+                                        DataType::BigInt | DataType::BigSerial => args.add(i),
+                                        _ => unreachable!(),
+                                    }
                                 } else {
-                                    return Err(format!("无法将字符串 '{}' 解析为整数", s));
+                                    // PG 二进制协议不接受 text → integer 转换
+                                    log::warn!("[PG目标] 字符串 '{}' 无法解析为整数，降级为 NULL（目标列类型: {:?}）", s, bind_data_type);
+                                    args.add::<Option<i64>>(None)
                                 }
                             }
                             DataType::Float | DataType::Real => {
                                 if let Ok(f) = s.parse::<f32>() {
                                     args.add(f)
+                                } else if let Ok(f) = s.parse::<f64>() {
+                                    args.add(f as f32)
                                 } else {
-                                    return Err(format!("无法将字符串 '{}' 解析为浮点数", s));
+                                    log::warn!("[PG目标] 字符串 '{}' 无法解析为浮点数，降级为 NULL", s);
+                                    args.add::<Option<f32>>(None)
                                 }
                             }
                             DataType::Double => {
                                 if let Ok(f) = s.parse::<f64>() {
                                     args.add(f)
                                 } else {
-                                    return Err(format!("无法将字符串 '{}' 解析为双精度浮点数", s));
+                                    log::warn!("[PG目标] 字符串 '{}' 无法解析为双精度浮点数，降级为 NULL", s);
+                                    args.add::<Option<f64>>(None)
                                 }
                             }
                             DataType::Decimal { .. } | DataType::Numeric { .. } => {
-                                // 对于 PostgreSQL 的 decimal/numeric，直接传递字符串
-                                args.add(s.clone())
+                                // PG 二进制协议不接受 text → numeric 转换
+                                // 解析为 f64，PG 会自动做 double precision → numeric 隐式转换
+                                if let Ok(f) = s.parse::<f64>() {
+                                    args.add(f)
+                                } else {
+                                    log::warn!("[PG目标] 字符串 '{}' 无法解析为数值，降级为 NULL（目标列类型: {:?}）", s, bind_data_type);
+                                    args.add::<Option<f64>>(None)
+                                }
                             }
                             DataType::Json | DataType::Jsonb => {
                                 // 字符串绑定到 json/jsonb 列需要解析为 serde_json::Value
@@ -658,9 +907,71 @@ impl DataTarget for PostgreSQLTarget {
                             _ => args.add(s.clone()), // 其他类型直接作为字符串传递
                         }
                     }
-                    Value::Bytes(b) => args.add(b.clone()),
-                    Value::Date(d) => args.add::<chrono::NaiveDate>(*d),
-                    Value::Time(t) => args.add::<chrono::NaiveTime>(*t),
+                    Value::Bytes(b) => {
+                        match bind_data_type {
+                            DataType::Json | DataType::Jsonb => {
+                                // 二进制 → JSON：尝试 UTF-8 解码后解析，否则降级 NULL
+                                match String::from_utf8(b.clone()) {
+                                    Ok(s) => match serde_json::from_str::<serde_json::Value>(&s) {
+                                        Ok(v) => args.add(v),
+                                        Err(_) => {
+                                            log::warn!("[PG目标] 二进制数据转 JSON 失败，包装为字符串");
+                                            args.add(serde_json::Value::String(s))
+                                        }
+                                    },
+                                    Err(_) => {
+                                        log::warn!("[PG目标] 二进制数据无法解码为 UTF-8，降级为 NULL（目标: JSON）");
+                                        args.add::<Option<serde_json::Value>>(None)
+                                    }
+                                }
+                            }
+                            DataType::Text | DataType::MediumText | DataType::LongText |
+                            DataType::VarChar { .. } | DataType::Char { .. } => {
+                                // 二进制 → 文本：尝试 UTF-8 解码
+                                match String::from_utf8(b.clone()) {
+                                    Ok(s) => args.add(s),
+                                    Err(_) => {
+                                        log::warn!("[PG目标] 二进制数据无法解码为文本，降级为 NULL");
+                                        args.add::<Option<String>>(None)
+                                    }
+                                }
+                            }
+                            _ => args.add(b.clone()),
+                        }
+                    }
+                    Value::Date(d) => {
+                        match bind_data_type {
+                            DataType::Json | DataType::Jsonb => {
+                                args.add(serde_json::Value::String(d.to_string()))
+                            }
+                            DataType::Text | DataType::MediumText | DataType::LongText |
+                            DataType::VarChar { .. } | DataType::Char { .. } => {
+                                args.add(d.to_string())
+                            }
+                            DataType::DateTime { .. } | DataType::Timestamp { with_tz: false, .. } => {
+                                let dt = d.and_hms_opt(0, 0, 0).unwrap();
+                                args.add::<chrono::NaiveDateTime>(dt)
+                            }
+                            DataType::Timestamp { with_tz: true, .. } => {
+                                let dt = d.and_hms_opt(0, 0, 0).unwrap();
+                                let utc = chrono::Utc.from_utc_datetime(&dt);
+                                args.add::<chrono::DateTime<chrono::Utc>>(utc)
+                            }
+                            _ => args.add::<chrono::NaiveDate>(*d),
+                        }
+                    }
+                    Value::Time(t) => {
+                        match bind_data_type {
+                            DataType::Json | DataType::Jsonb => {
+                                args.add(serde_json::Value::String(t.to_string()))
+                            }
+                            DataType::Text | DataType::MediumText | DataType::LongText |
+                            DataType::VarChar { .. } | DataType::Char { .. } => {
+                                args.add(t.to_string())
+                            }
+                            _ => args.add::<chrono::NaiveTime>(*t),
+                        }
+                    }
                     Value::DateTime(dt) => {
                         // 根据目标列类型决定绑定类型
                         match bind_data_type {
@@ -668,6 +979,16 @@ impl DataTarget for PostgreSQLTarget {
                                 // 目标列是带时区的时间戳，将 NaiveDateTime 转换为 DateTime<Utc>（假设为 UTC）
                                 let utc = chrono::Utc.from_utc_datetime(dt);
                                 args.add::<chrono::DateTime<chrono::Utc>>(utc)
+                            }
+                            DataType::Json | DataType::Jsonb => {
+                                args.add(serde_json::Value::String(dt.to_string()))
+                            }
+                            DataType::Text | DataType::MediumText | DataType::LongText |
+                            DataType::VarChar { .. } | DataType::Char { .. } => {
+                                args.add(dt.to_string())
+                            }
+                            DataType::Date => {
+                                args.add::<chrono::NaiveDate>(dt.date())
                             }
                             _ => {
                                 // 其他情况（包括 DateTime 不带时区）直接使用 NaiveDateTime
@@ -692,6 +1013,16 @@ impl DataTarget for PostgreSQLTarget {
                                 let naive = ts.naive_utc();
                                 args.add::<chrono::NaiveDateTime>(naive)
                             }
+                            DataType::Json | DataType::Jsonb => {
+                                args.add(serde_json::Value::String(ts.to_rfc3339()))
+                            }
+                            DataType::Text | DataType::MediumText | DataType::LongText |
+                            DataType::VarChar { .. } | DataType::Char { .. } => {
+                                args.add(ts.to_rfc3339())
+                            }
+                            DataType::Date => {
+                                args.add::<chrono::NaiveDate>(ts.naive_utc().date())
+                            }
                             _ => {
                                 // 其他类型，默认按 DateTime<Utc> 处理
                                 args.add::<chrono::DateTime<chrono::Utc>>(*ts)
@@ -700,32 +1031,82 @@ impl DataTarget for PostgreSQLTarget {
                     }
                     Value::Json(s) => {
                         // PostgreSQL json 列期望 serde_json::Value，不能绑字符串
-                        match serde_json::from_str::<serde_json::Value>(s) {
-                            Ok(v) => args.add(v),
-                            Err(_) => {
-                                // 无效 JSON，包装为 JSON 字符串值
-                                log::warn!("[PG目标] JSON 值无效，包装为字符串: {}", s);
-                                args.add(serde_json::Value::String(s.clone()))
+                        match bind_data_type {
+                            DataType::Jsonb => {
+                                // json → jsonb：解析后重新绑
+                                match serde_json::from_str::<serde_json::Value>(s) {
+                                    Ok(v) => args.add(v),
+                                    Err(_) => {
+                                        log::warn!("[PG目标] JSON 值无效，包装为字符串: {}", s);
+                                        args.add(serde_json::Value::String(s.clone()))
+                                    }
+                                }
+                            }
+                            DataType::Text | DataType::MediumText | DataType::LongText |
+                            DataType::VarChar { .. } | DataType::Char { .. } => {
+                                // json → text：直接传字符串
+                                args.add(s.clone())
+                            }
+                            _ => {
+                                // 默认按 json 处理
+                                match serde_json::from_str::<serde_json::Value>(s) {
+                                    Ok(v) => args.add(v),
+                                    Err(_) => {
+                                        log::warn!("[PG目标] JSON 值无效，包装为字符串: {}", s);
+                                        args.add(serde_json::Value::String(s.clone()))
+                                    }
+                                }
                             }
                         }
                     }
                     Value::Jsonb(s) => {
                         // PostgreSQL jsonb 列同样期望 serde_json::Value
-                        match serde_json::from_str::<serde_json::Value>(s) {
-                            Ok(v) => args.add(v),
-                            Err(_) => {
-                                log::warn!("[PG目标] JSONB 值无效，包装为字符串: {}", s);
-                                args.add(serde_json::Value::String(s.clone()))
+                        match bind_data_type {
+                            DataType::Json => {
+                                // jsonb → json：解析后绑
+                                match serde_json::from_str::<serde_json::Value>(s) {
+                                    Ok(v) => args.add(v),
+                                    Err(_) => {
+                                        log::warn!("[PG目标] JSONB 值无效，包装为字符串: {}", s);
+                                        args.add(serde_json::Value::String(s.clone()))
+                                    }
+                                }
+                            }
+                            DataType::Text | DataType::MediumText | DataType::LongText |
+                            DataType::VarChar { .. } | DataType::Char { .. } => {
+                                args.add(s.clone())
+                            }
+                            _ => {
+                                match serde_json::from_str::<serde_json::Value>(s) {
+                                    Ok(v) => args.add(v),
+                                    Err(_) => {
+                                        log::warn!("[PG目标] JSONB 值无效，包装为字符串: {}", s);
+                                        args.add(serde_json::Value::String(s.clone()))
+                                    }
+                                }
                             }
                         }
                     }
                     Value::Uuid(s) => {
                         // PostgreSQL uuid 列期望 uuid::Uuid 类型，不能绑字符串
-                        match uuid::Uuid::parse_str(s) {
-                            Ok(u) => args.add(u),
-                            Err(_) => {
-                                log::warn!("[PG目标] UUID 值无效，作为字符串传递: {}", s);
+                        match bind_data_type {
+                            DataType::Json | DataType::Jsonb => {
+                                // uuid → json：包装为字符串值
+                                args.add(serde_json::Value::String(s.clone()))
+                            }
+                            DataType::Text | DataType::MediumText | DataType::LongText |
+                            DataType::VarChar { .. } | DataType::Char { .. } => {
                                 args.add(s.clone())
+                            }
+                            _ => {
+                                // 默认按 UUID 类型处理
+                                match uuid::Uuid::parse_str(s) {
+                                    Ok(u) => args.add(u),
+                                    Err(_) => {
+                                        log::warn!("[PG目标] UUID 值无效，作为字符串传递: {}", s);
+                                        args.add(s.clone())
+                                    }
+                                }
                             }
                         }
                     }
@@ -754,7 +1135,7 @@ impl DataTarget for PostgreSQLTarget {
         table: &str,
     ) -> Result<(), String> {
         // 使用 public.table 全限定名
-        let sql = format!("TRUNCATE TABLE public.{} CASCADE", table);
+        let sql = format!("TRUNCATE TABLE public.\"{}\" CASCADE", table);
         log::info!("[PG目标] 清空表数据: {} （数据库: {}）", sql, database);
         sqlx::query(&sql)
             .execute(&self.pool)

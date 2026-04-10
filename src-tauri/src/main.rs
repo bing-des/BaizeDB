@@ -9,8 +9,8 @@ use state::AppState;
 use tauri::Manager;
 
 fn main() {
-    // 默认 debug 级别，可通过 RUST_LOG 环境变量覆盖
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("debug")).init();
+    // 默认 info 级别，可通过 RUST_LOG 环境变量覆盖
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())

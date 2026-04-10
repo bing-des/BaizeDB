@@ -122,6 +122,12 @@ impl DataTarget for MySQLTarget {
             format!("`{}` {}{}{}", col.name, mysql_type, null_clause, default_clause)
         }).collect();
 
+        // 如果列定义为空（所有列都被忽略），跳过建表
+        if column_defs.is_empty() {
+            log::warn!("[MySQL目标] 表 {} 没有列定义，跳过建表", schema.name);
+            return Ok(());
+        }
+
         let primary_keys: Vec<String> = schema.columns.iter()
             .filter(|c| c.is_primary_key)
             .map(|c| c.name.clone())
@@ -136,6 +142,8 @@ impl DataTarget for MySQLTarget {
         let create_table_sql = format!("CREATE TABLE IF NOT EXISTS `{}`.`{}` ({}{});", 
             database, schema.name, column_defs.join(", "), pk_clause);
         
+        log::info!("[MySQL目标] 建表 SQL: {}", create_table_sql);
+
         sqlx::query(&create_table_sql)
             .execute(&self.pool)
             .await

@@ -209,7 +209,8 @@ impl DataSource for MySQLDataSource {
             let mut values = Vec::with_capacity(schema.columns.len());
             for (i, col) in schema.columns.iter().enumerate() {
                 let category = col.data_type.category();
-                let value = match category {
+                log::debug!("[MySQL源] 读取列 '{}', 分类 '{:?}'", col.name, category);
+                let value: Option<Value> = match category {
                     DataTypeCategory::Integer => {
                         if let Ok(v) = row.try_get::<Option<i8>, _>(i) {
                             v.map(|x: i8| Value::TinyInt(x))

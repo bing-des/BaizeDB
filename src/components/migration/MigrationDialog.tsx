@@ -1,8 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { X, Database, Loader2, Copy, CheckCircle, ClipboardCopy, ArrowRight } from 'lucide-react';
+import { X, Database, Loader2, Copy, CheckCircle, ClipboardCopy, ArrowRight, Settings2, ChevronDown, ChevronRight, EyeOff } from 'lucide-react';
 import { migrationApi, connectionApi, databaseApi } from '../../utils/api';
 import { useConnectionStore } from '../../store';
-import type { MigrationInput, MigrationProgress, MigrationStatus } from '../../types';
+import type { MigrationInput, MigrationProgress, MigrationStatus, TableMapping, ColumnMapping } from '../../types';
 
 interface Props {
   onClose: () => void;
@@ -54,6 +54,14 @@ export default function MigrationDialog({ onClose }: Props) {
   const unlistenRef = useRef<(() => void) | null>(null);
   const migrationIdRef = useRef<string | null>(null);
 
+  // 映射相关 state
+  const [showMapping, setShowMapping] = useState(false);
+  const [tableMappings, setTableMappings] = useState<TableMapping[]>([]);
+  const [expandedTables, setExpandedTables] = useState<Set<string>>(new Set());
+  const [targetTables, setTargetTables] = useState<string[]>([]);
+  // 目标表的列信息（key: "targetDb:targetTable"）
+  const [targetColumns, setTargetColumns] = useState<Record<string, string[]>>({});
+
   // 清理事件监听
   useEffect(() => {
     return () => {
@@ -99,12 +107,32 @@ export default function MigrationDialog({ onClose }: Props) {
         const tables = await databaseApi.listTables(form.sourceConnectionId, form.sourceDatabase);
         setSourceTables(tables.map(t => t.name));
         setSelectedTables([]);
+        // 初始化映射：为每个源表创建默认映射
+        setTableMappings(tables.map(t => ({ source_table: t.name, target_table: undefined, column_mappings: undefined })));
       } catch (e) {
         console.error('Failed to load source tables', e);
       }
     };
     load();
   }, [form.sourceConnectionId, form.sourceDatabase]);
+
+  // 加载目标库表列表（用于映射配置参考）
+  useEffect(() => {
+    if (!form.targetConnectionId || !form.target_database) {
+      setTargetTables([]);
+      return;
+    }
+    const load = async () => {
+      try {
+        const tables = await databaseApi.listTables(form.targetConnectionId, form.target_database!);
+        setTargetTables(tables.map(t => t.name));
+      } catch (e) {
+        console.error('Failed to load target tables', e);
+        setTargetTables([]);
+      }
+    };
+    load();
+  }, [form.targetConnectionId, form.target_database]);
 
   const handleStart = useCallback(async () => {
     if (!form.sourceConnectionId || !form.targetConnectionId || !form.sourceDatabase) {
@@ -142,6 +170,7 @@ export default function MigrationDialog({ onClose }: Props) {
         migrate_data: form.migrate_data,
         truncate_target: form.truncate_target,
         batch_size: form.batch_size,
+        table_mappings: tableMappings.length > 0 ? tableMappings : undefined,
       };
 
       // 启动迁移，获得 migration_id
@@ -166,6 +195,80 @@ export default function MigrationDialog({ onClose }: Props) {
     setSelectedTables(prev =>
       prev.includes(table) ? prev.filter(t => t !== table) : [...prev, table]
     );
+  };
+
+  // 映射：更新某个表的目标表名
+  const updateTableMapping = (sourceTable: string, targetTable: string) => {
+    setTableMappings(prev => prev.map(m =>
+      m.source_table === sourceTable
+        ? { ...m, target_table: targetTable || undefined }
+        : m
+    ));
+    // 如果目标表在已存在列表中，预加载其列信息
+    if (targetTable && targetTables.includes(targetTable) && form.target_database) {
+      loadTargetColumns(targetTable);
+    }
+  };
+
+  // 映射：展开/收起某表的列映射
+  const toggleExpanded = (table: string) => {
+    setExpandedTables(prev => {
+      const next = new Set(prev);
+      if (next.has(table)) next.delete(table);
+      else next.add(table);
+      return next;
+    });
+  };
+
+  // 映射：更新某表某列的目标列名
+  const updateColumnMapping = (sourceTable: string, sourceColumn: string, targetColumn: string) => {
+    setTableMappings(prev => prev.map(m => {
+      if (m.source_table !== sourceTable) return m;
+      const cols = m.column_mappings || [];
+      const existing = cols.find(c => c.source_column === sourceColumn);
+      const newCols = existing
+        ? cols.map(c => c.source_column === sourceColumn ? { ...c, target_column: targetColumn || undefined } : c)
+        : [...cols, { source_column: sourceColumn, target_column: targetColumn || undefined }];
+      return { ...m, column_mappings: newCols };
+    }));
+  };
+
+  // 映射：切换某表某列的忽略状态
+  const toggleColumnIgnore = (sourceTable: string, sourceColumn: string) => {
+    setTableMappings(prev => prev.map(m => {
+      if (m.source_table !== sourceTable) return m;
+      const cols = m.column_mappings || [];
+      const existing = cols.find(c => c.source_column === sourceColumn);
+      const newCols = existing
+        ? cols.map(c => c.source_column === sourceColumn ? { ...c, ignored: !c.ignored } : c)
+        : [...cols, { source_column: sourceColumn, target_column: undefined, ignored: true }];
+      return { ...m, column_mappings: newCols };
+    }));
+  };
+
+  // 加载源表列名（用于列映射展开）
+  const [sourceColumns, setSourceColumns] = useState<Record<string, string[]>>({});
+  const loadSourceColumns = async (table: string) => {
+    if (sourceColumns[table]) return;
+    try {
+      const cols = await databaseApi.listColumns(form.sourceConnectionId, form.sourceDatabase, table);
+      setSourceColumns(prev => ({ ...prev, [table]: cols.map(c => c.name) }));
+    } catch (e) {
+      console.error('Failed to load source columns', e);
+    }
+  };
+
+  // 加载目标表列名（当目标表存在时用于列选择参考）
+  const loadTargetColumns = async (targetTable: string) => {
+    if (!form.targetConnectionId || !form.target_database) return;
+    const key = `${form.target_database}:${targetTable}`;
+    if (targetColumns[key]) return;
+    try {
+      const cols = await databaseApi.listColumns(form.targetConnectionId, form.target_database!, targetTable);
+      setTargetColumns(prev => ({ ...prev, [key]: cols.map(c => c.name) }));
+    } catch (e) {
+      console.error('Failed to load target columns', e);
+    }
   };
 
   const handleCopyError = async () => {
@@ -324,6 +427,124 @@ export default function MigrationDialog({ onClose }: Props) {
               )}
             </div>
           </div>
+
+          {/* Mapping configuration */}
+          {sourceTables.length > 0 && (
+            <div>
+              <button
+                className="flex items-center gap-1.5 text-xs font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors uppercase tracking-wider"
+                onClick={() => setShowMapping(!showMapping)}
+                disabled={loading}
+              >
+                <Settings2 size={13} />
+                表/列映射配置
+                {showMapping ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+              </button>
+
+              {showMapping && (
+                <div className="mt-2 border border-[var(--border)] rounded-lg overflow-hidden">
+                  <div className="px-3 py-2 bg-[var(--bg-tertiary)] text-xs text-[var(--text-muted)]">
+                    源表 → 目标表映射（目标表留空则使用源表名，已存在的目标表可从参考列表选择）
+                  </div>
+                  <div className="max-h-72 overflow-y-auto divide-y divide-[var(--border)]">
+                    {(selectedTables.length > 0 ? selectedTables : sourceTables).map(table => {
+                      const mapping = tableMappings.find(m => m.source_table === table);
+                      const isExpanded = expandedTables.has(table);
+                      const srcCols = sourceColumns[table];
+                      // 判断目标表名（已配置的 or 源表名）
+                      const effectiveTargetTable = mapping?.target_table || table;
+                      const isTargetExisting = targetTables.includes(effectiveTargetTable);
+                      // 获取目标表列
+                      const tgtCols = form.target_database
+                        ? targetColumns[`${form.target_database}:${effectiveTargetTable}`]
+                        : undefined;
+
+                      return (
+                        <div key={table} className="px-3 py-2">
+                          {/* 表级映射行：源表 → 目标表 */}
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs text-[var(--text-secondary)] font-medium min-w-0 truncate shrink-0" title={table}>
+                              {table}
+                            </span>
+                            <ArrowRight size={12} className="text-[var(--text-muted)] shrink-0" />
+                            <input
+                              className="input-field flex-1 text-xs !py-1 !px-2 min-w-0"
+                              placeholder={table}
+                              value={mapping?.target_table || ''}
+                              onChange={e => updateTableMapping(table, e.target.value)}
+                              disabled={loading}
+                              list={`target-table-list-${table}`}
+                            />
+                            <button
+                              className="p-1 hover:bg-[var(--bg-tertiary)] rounded transition-colors shrink-0"
+                              onClick={() => { toggleExpanded(table); loadSourceColumns(table); if (isTargetExisting) loadTargetColumns(effectiveTargetTable); }}
+                              title="配置列映射"
+                              disabled={loading}
+                            >
+                              {isExpanded ? <ChevronDown size={12} className="text-[var(--text-muted)]" /> : <ChevronRight size={12} className="text-[var(--text-muted)]" />}
+                            </button>
+                          </div>
+                          <datalist id={`target-table-list-${table}`}>
+                            {targetTables.map(t => (
+                              <option key={t} value={t} />
+                            ))}
+                          </datalist>
+
+                          {/* 列映射 */}
+                          {isExpanded && srcCols && (
+                            <div className="mt-2 ml-2 space-y-1">
+                              {/* 表头 */}
+                              <div className="flex items-center gap-2 text-[10px] text-[var(--text-muted)] uppercase tracking-wider mb-1">
+                                <span className="w-[120px] shrink-0">源列</span>
+                                <span className="shrink-0 w-3" />
+                                <span className="flex-1">目标列</span>
+                                <span className="w-8 shrink-0 text-center">忽略</span>
+                              </div>
+                              {srcCols.map(col => {
+                                const colMapping = mapping?.column_mappings?.find(c => c.source_column === col);
+                                const isIgnored = colMapping?.ignored || false;
+                                return (
+                                  <div key={col} className={`flex items-center gap-2 ${isIgnored ? 'opacity-50' : ''}`}>
+                                    <span className="text-xs text-[var(--text-secondary)] w-[120px] shrink-0 truncate" title={col}>
+                                      {col}
+                                    </span>
+                                    <ArrowRight size={10} className="text-[var(--text-muted)] shrink-0" />
+                                    <input
+                                      className="input-field flex-1 text-xs !py-0.5 !px-1.5 min-w-0"
+                                      placeholder={col}
+                                      value={colMapping?.target_column || ''}
+                                      onChange={e => updateColumnMapping(table, col, e.target.value)}
+                                      disabled={loading || isIgnored}
+                                      list={isTargetExisting && tgtCols ? `target-col-list-${table}-${col}` : undefined}
+                                    />
+                                    <button
+                                      className={`w-8 h-6 flex items-center justify-center rounded transition-colors shrink-0 ${isIgnored ? 'bg-red-500/20 text-red-400' : 'hover:bg-[var(--bg-tertiary)] text-[var(--text-muted)]'}`}
+                                      onClick={() => toggleColumnIgnore(table, col)}
+                                      disabled={loading}
+                                      title={isIgnored ? '取消忽略' : '忽略此列（不迁移）'}
+                                    >
+                                      <EyeOff size={12} />
+                                    </button>
+                                    {isTargetExisting && tgtCols && (
+                                      <datalist id={`target-col-list-${table}-${col}`}>
+                                        {tgtCols.map(tc => (
+                                          <option key={tc} value={tc} />
+                                        ))}
+                                      </datalist>
+                                    )}
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Options */}
           <div className="space-y-3">

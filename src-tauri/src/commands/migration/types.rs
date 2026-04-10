@@ -16,6 +16,70 @@ pub struct MigrationInput {
     pub migrate_data: Option<bool>,
     pub truncate_target: Option<bool>,
     pub batch_size: Option<usize>,
+    /// 表映射配置（源表名 → 目标表名 + 列映射）
+    pub table_mappings: Option<Vec<TableMapping>>,
+}
+
+/// 表映射：源表 → 目标表
+#[derive(Debug, Deserialize, Clone)]
+pub struct TableMapping {
+    /// 源表名
+    pub source_table: String,
+    /// 目标表名（None 则使用源表名）
+    pub target_table: Option<String>,
+    /// 列映射（None 则所有列使用源列名）
+    pub column_mappings: Option<Vec<ColumnMapping>>,
+}
+
+/// 列映射：源列 → 目标列
+#[derive(Debug, Deserialize, Clone)]
+pub struct ColumnMapping {
+    /// 源列名
+    pub source_column: String,
+    /// 目标列名（None 则使用源列名）
+    pub target_column: Option<String>,
+    /// 是否忽略此列（不迁移）
+    #[serde(default)]
+    pub ignored: Option<bool>,
+}
+
+impl TableMapping {
+    /// 获取目标表名（未配置则返回源表名）
+    pub fn target_table_name(&self) -> &str {
+        self.target_table.as_deref().unwrap_or(&self.source_table)
+    }
+
+    /// 获取列映射：返回源列名 → 目标列名的映射
+    /// 未配置映射的列，目标列名 = 源列名
+    /// 忽略的列不会出现在映射中
+    pub fn column_map(&self) -> std::collections::HashMap<String, String> {
+        match &self.column_mappings {
+            Some(mappings) => mappings.iter()
+                .filter(|m| !m.ignored.unwrap_or(false))
+                .map(|m| {
+                    let target = m.target_column.clone().unwrap_or_else(|| m.source_column.clone());
+                    (m.source_column.clone(), target)
+                })
+                .collect(),
+            None => std::collections::HashMap::new(),
+        }
+    }
+
+    /// 获取被忽略的列名列表
+    pub fn ignored_columns(&self) -> Vec<String> {
+        match &self.column_mappings {
+            Some(mappings) => mappings.iter()
+                .filter(|m| m.ignored.unwrap_or(false))
+                .map(|m| m.source_column.clone())
+                .collect(),
+            None => Vec::new(),
+        }
+    }
+
+    /// 查找某个源表的映射（从映射列表中）
+    pub fn find_for_table<'a>(mappings: &'a [TableMapping], source_table: &str) -> Option<&'a TableMapping> {
+        mappings.iter().find(|m| m.source_table == source_table)
+    }
 }
 
 /// 迁移进度

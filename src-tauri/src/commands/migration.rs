@@ -17,7 +17,7 @@ use mysql_source::MySQLDataSource;
 use mysql_target::MySQLTarget;
 use postgres_source::PostgreSQLDataSource;
 use postgres_target::PostgreSQLTarget;
-use types::{DataSource, DataTarget, MigrationInput, MigrationProgress, MigrationStatus};
+use types::{DataSource, DataTarget, MigrationInput, MigrationProgress, MigrationStatus, TableMapping};
 
 /// 获取连接池辅助函数
 async fn get_pool(state: &AppState, connection_id: &str) -> Result<DbPool, String> {
@@ -202,6 +202,9 @@ async fn run_migration(
     };
     let total_tables = tables.len();
 
+    // 获取表映射配置
+    let table_mappings = input.table_mappings.unwrap_or_default();
+
     let mut progress = MigrationProgress {
         migration_id: migration_id.to_string(),
         current_table: String::new(),
@@ -218,12 +221,45 @@ async fn run_migration(
         progress.status = MigrationStatus::MigratingStructure;
 
         for (idx, table) in tables.iter().enumerate() {
-            progress.current_table = table.clone();
+            // 查找映射
+            let mapping = TableMapping::find_for_table(&table_mappings, table);
+            let target_table = mapping
+                .map(|m: &TableMapping| m.target_table_name().to_string())
+                .unwrap_or_else(|| table.clone());
+            let col_map = mapping
+                .map(|m: &TableMapping| m.column_map())
+                .unwrap_or_default();
+            let ignored_cols = mapping
+                .map(|m: &TableMapping| m.ignored_columns())
+                .unwrap_or_default();
+
+            progress.current_table = if target_table != *table {
+                format!("{} → {}", table, target_table)
+            } else {
+                table.clone()
+            };
             progress.tables_completed = idx;
             emit_progress(app, &progress);
 
             // 获取源表结构
-            let schema = data_source.get_table_schema(&input.source_database, table).await?;
+            let mut schema = data_source.get_table_schema(&input.source_database, table).await?;
+
+            // 过滤忽略的列
+            if !ignored_cols.is_empty() {
+                schema.columns.retain(|col| !ignored_cols.contains(&col.name));
+            }
+
+            // 应用列映射：修改 schema 中的列名
+            if !col_map.is_empty() {
+                for col in &mut schema.columns {
+                    if let Some(target_name) = col_map.get(&col.name) {
+                        col.name = target_name.clone();
+                    }
+                }
+            }
+
+            // 修改表名为目标表名
+            schema.name = target_table.clone();
 
             // 在目标数据库创建表
             data_target.create_table(target_database, &schema).await?;
@@ -234,7 +270,7 @@ async fn run_migration(
                     if !comment.is_empty() {
                         data_target.add_column_comment(
                             target_database,
-                            table,
+                            &target_table,
                             &column.name,
                             comment,
                         ).await?;
@@ -249,29 +285,69 @@ async fn run_migration(
         progress.status = MigrationStatus::MigratingData;
 
         for (idx, table) in tables.iter().enumerate() {
-            progress.current_table = table.clone();
+            // 查找映射
+            let mapping = TableMapping::find_for_table(&table_mappings, table);
+            let target_table = mapping
+                .map(|m: &TableMapping| m.target_table_name().to_string())
+                .unwrap_or_else(|| table.clone());
+            let col_map = mapping
+                .map(|m: &TableMapping| m.column_map())
+                .unwrap_or_default();
+            let ignored_cols = mapping
+                .map(|m: &TableMapping| m.ignored_columns())
+                .unwrap_or_default();
+
+            progress.current_table = if target_table != *table {
+                format!("{} → {}", table, target_table)
+            } else {
+                table.clone()
+            };
             progress.tables_completed = idx;
             progress.current_table_rows = 0;
             emit_progress(app, &progress);
 
             // 清空目标表数据（如果选项开启）
             if truncate_target {
-                data_target.truncate_table(target_database, table).await?;
-                log::info!("已清空目标表 {}.{} 的数据", target_database, table);
+                data_target.truncate_table(target_database, &target_table).await?;
+                log::info!("已清空目标表 {}.{} 的数据", target_database, target_table);
             }
 
-            // 获取表结构
-            let schema = data_source.get_table_schema(&input.source_database, table).await?;
+            // 获取源表结构（用原始列名读取源数据）
+            let source_schema = data_source.get_table_schema(&input.source_database, table).await?;
+
+            // 计算需要忽略的列索引（用于从 DataRow 中过滤值）
+            let ignored_indices: Vec<usize> = source_schema.columns.iter().enumerate()
+                .filter(|(_, col)| ignored_cols.contains(&col.name))
+                .map(|(i, _)| i)
+                .collect();
+
+            // 构建映射后的目标 schema（列名替换 + 过滤忽略列）
+            let target_schema = {
+                let mut mapped = source_schema.clone();
+                mapped.name = target_table.clone();
+                if !col_map.is_empty() {
+                    for col in &mut mapped.columns {
+                        if let Some(target_name) = col_map.get(&col.name) {
+                            col.name = target_name.clone();
+                        }
+                    }
+                }
+                // 过滤忽略的列
+                if !ignored_cols.is_empty() {
+                    mapped.columns.retain(|col| !ignored_cols.contains(&col.name));
+                }
+                mapped
+            };
 
             let mut offset = 0;
             let mut total_rows = 0;
 
             loop {
-                // 读取一批数据
-                let rows = data_source.read_table_data(
+                // 读取一批数据（用源 schema 的列名读取）
+                let mut rows = data_source.read_table_data(
                     &input.source_database,
                     table,
-                    &schema,
+                    &source_schema,
                     offset,
                     batch_size,
                 ).await?;
@@ -280,11 +356,23 @@ async fn run_migration(
                     break;
                 }
 
-                // 插入到目标数据库
+                // 过滤掉忽略列的值
+                if !ignored_indices.is_empty() {
+                    for row in &mut rows {
+                        // 从后向前删除，避免索引偏移
+                        for &idx in ignored_indices.iter().rev() {
+                            if idx < row.values.len() {
+                                row.values.remove(idx);
+                            }
+                        }
+                    }
+                }
+
+                // 插入到目标数据库（用映射后的 schema）
                 let inserted = data_target.insert_rows(
                     target_database,
-                    table,
-                    &schema,
+                    &target_table,
+                    &target_schema,
                     &rows,
                 ).await?;
 

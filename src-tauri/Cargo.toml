@@ -28,6 +28,9 @@ once_cell = "1"
 log = "0.4"
 env_logger = "0.11"
 async-trait = "0.1"
+base64 = "0.22"
+ipnet = "2.10"
+macaddr = "1.0"
 
 [profile.dev]
 incremental = true

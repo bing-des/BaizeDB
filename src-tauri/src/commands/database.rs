@@ -27,12 +27,10 @@ pub struct TableInfo {
 #[derive(Debug, Serialize)]
 pub struct ColumnInfo {
     pub name: String,
-    #[serde(rename = "dataType")]
     pub data_type: String,
     pub nullable: bool,
     pub key: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[serde(rename = "defaultValue")]
     pub default_value: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub comment: Option<String>,

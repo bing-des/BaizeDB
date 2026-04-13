@@ -205,75 +205,126 @@ fn pg_rows_to_json(rows: &[sqlx::postgres::PgRow]) -> Vec<Vec<serde_json::Value>
                     }
                     let tname = val.type_info().name().to_uppercase();
 
-                    // 精确匹配整数类型（避免 TIMESTAMP 包含 INT 子串被误匹配）
-                    if tname == "INT2" || tname == "INT4" || tname == "INT8"
-                        || tname == "SERIAL" || tname == "BIGSERIAL" || tname == "SMALLSERIAL"
-                    {
+                    // ── 整数类型（PG 二进制协议精确匹配）─────────────
+                    if tname == "INT2" || tname == "SMALLSERIAL" {
+                        row.try_get::<i16, _>(i)
+                            .map(|v| serde_json::json!(v as i64))
+                            .unwrap_or(serde_json::Value::Null)
+                    } else if tname == "INT4" || tname == "SERIAL" || tname == "INTEGER" {
+                        row.try_get::<i32, _>(i)
+                            .map(|v| serde_json::json!(v as i64))
+                            .unwrap_or(serde_json::Value::Null)
+                    } else if tname == "INT8" || tname == "BIGSERIAL" || tname == "BIGINT" {
                         row.try_get::<i64, _>(i)
                             .map(|v| serde_json::json!(v))
                             .unwrap_or(serde_json::Value::Null)
-                    } else if tname.contains("FLOAT") || tname.contains("NUMERIC")
-                    {
+
+                    // ── 浮点类型（FLOAT4 用 f32，FLOAT8/NUMERIC 用 f64）──
+                    } else if tname == "FLOAT4" || tname == "REAL" {
+                        row.try_get::<f32, _>(i)
+                            .map(|v| serde_json::json!(v as f64))
+                            .unwrap_or(serde_json::Value::Null)
+                    } else if tname == "FLOAT8" || tname == "DOUBLE PRECISION" {
                         row.try_get::<f64, _>(i)
                             .map(|v| serde_json::json!(v))
                             .unwrap_or(serde_json::Value::Null)
-                    } else if tname == "BOOL" {
+                    } else if tname == "NUMERIC" || tname == "DECIMAL" {
+                        // NUMERIC 精度可能超过 f64，用 String 读取再尝试解析
+                        row.try_get::<String, _>(i)
+                            .ok()
+                            .and_then(|s| s.parse::<f64>().ok().map(|n| serde_json::json!(n)))
+                            .unwrap_or_else(|| row.try_get::<String, _>(i)
+                                .map(|v| serde_json::json!(v))
+                                .unwrap_or(serde_json::Value::Null))
+
+                    // ── 布尔 ─────────────────────────────────────
+                    } else if tname == "BOOL" || tname == "BOOLEAN" {
                         row.try_get::<bool, _>(i)
                             .map(|v| serde_json::json!(v))
                             .unwrap_or(serde_json::Value::Null)
-                    } else if tname == "TIMESTAMP" {
-                        // timestamp without time zone → NaiveDateTime
-                        row.try_get::<chrono::NaiveDateTime, _>(i)
-                            .map(|v| serde_json::json!(v.to_string()))
-                            .unwrap_or_else(|_| {
-                                serde_json::json!(format!("[{}]", val.type_info().name()))
-                            })
-                    } else if tname == "TIMESTAMPTZ" {
-                        // timestamp with time zone → DateTime<Utc>
-                        row.try_get::<chrono::DateTime<chrono::Utc>, _>(i)
-                            .map(|v| serde_json::json!(v.to_string()))
-                            .unwrap_or_else(|_| {
-                                serde_json::json!(format!("[{}]", val.type_info().name()))
-                            })
-                    } else if tname == "DATE" {
-                        row.try_get::<chrono::NaiveDate, _>(i)
-                            .map(|v| serde_json::json!(v.to_string()))
-                            .unwrap_or_else(|_| {
-                                serde_json::json!(format!("[{}]", val.type_info().name()))
-                            })
-                    } else if tname == "TIME" {
-                        row.try_get::<chrono::NaiveTime, _>(i)
-                            .map(|v| serde_json::json!(v.to_string()))
-                            .unwrap_or_else(|_| {
-                                serde_json::json!(format!("[{}]", val.type_info().name()))
-                            })
-                    } else if tname == "TIMETZ" {
+
+                    // ── 字符串（各种 char/varchar/text 变体）─────────
+                    } else if tname == "TEXT" || tname == "VARCHAR"
+                        || tname == "CHAR" || tname == "BPCHAR"
+                        || tname == "NAME" || tname == "CHARACTER"
+                    {
                         row.try_get::<String, _>(i)
                             .map(|v| serde_json::json!(v))
-                            .unwrap_or_else(|_| {
-                                serde_json::json!(format!("[{}]", val.type_info().name()))
+                            .unwrap_or(serde_json::Value::Null)
+
+                    // ── 日期时间 ─────────────────────────────────
+                    } else if tname == "DATE" {
+                        row.try_get::<chrono::NaiveDate, _>(i)
+                            .map(|v| serde_json::json!(v.format("%Y-%m-%d").to_string()))
+                            .unwrap_or(fallback_type(&tname))
+                    } else if tname == "TIME" {
+                        row.try_get::<chrono::NaiveTime, _>(i)
+                            .map(|v| serde_json::json!(v.format("%H:%M:%S%.f").to_string()))
+                            .unwrap_or(fallback_type(&tname))
+                    } else if tname == "TIMETZ" {
+                        // time with time zone → String (sqlx 不直接支持 TimeTz 二进制读取)
+                        row.try_get::<String, _>(i)
+                            .map(|v| serde_json::json!(v))
+                            .unwrap_or(fallback_type(&tname))
+                    } else if tname == "TIMESTAMP" || tname == "TIMESTAMP WITHOUT TIME ZONE" {
+                        row.try_get::<chrono::NaiveDateTime, _>(i)
+                            .map(|v| serde_json::json!(v.format("%Y-%m-%d %H:%M:%S").to_string()))
+                            .unwrap_or(fallback_type(&tname))
+                    } else if tname == "TIMESTAMPTZ" || tname == "TIMESTAMP WITH TIME ZONE" {
+                        row.try_get::<chrono::DateTime<chrono::Utc>, _>(i)
+                            .map(|v| serde_json::json!(v.to_rfc3339_opts(
+                                chrono::SecondsFormat::Secs,
+                                false,
+                            )))
+                            .unwrap_or(fallback_type(&tname))
+
+                    // ── 二进制 ─────────────────────────────────────
+                    } else if tname == "BYTEA" {
+                        row.try_get::<Vec<u8>, _>(i)
+                            .map(|bytes| {
+                                let engine = base64::engine::general_purpose::STANDARD;
+                                serde_json::json!(base64::engine::Engine::encode(&engine, &bytes))
                             })
+                            .unwrap_or(serde_json::Value::Null)
+
+                    // ── UUID ──────────────────────────────────────
                     } else if tname == "UUID" {
                         row.try_get::<uuid::Uuid, _>(i)
                             .map(|v| serde_json::json!(v.to_string()))
-                            .unwrap_or_else(|_| {
-                                serde_json::json!(format!("[{}]", val.type_info().name()))
-                            })
+                            .unwrap_or(fallback_type(&tname))
+
+                    // ── JSON ──────────────────────────────────────
                     } else if tname == "JSON" || tname == "JSONB" {
                         row.try_get::<serde_json::Value, _>(i)
-                            .map(|v| serde_json::json!(v.to_string()))
-                            .unwrap_or_else(|_| {
-                                serde_json::json!(format!("[{}]", val.type_info().name()))
-                            })
+                            .map(|v| v.clone())
+                            .unwrap_or(fallback_type(&tname))
+
+                    // ── 网络地址 ──────────────────────────────────
+                    } else if tname == "INET" || tname == "CIDR" {
+                        // sqlx 0.8 对 IpNet 的 PG 支持有限，降级为 String 读取
+                        row.try_get::<String, _>(i)
+                            .map(|v| serde_json::json!(v))
+                            .unwrap_or(fallback_type(&tname))
+                    } else if tname == "MACADDR" || tname == "MACADDR8" {
+                        // sqlx 不直接支持 macaddr Decode，降级为 String
+                        row.try_get::<String, _>(i)
+                            .map(|v| serde_json::json!(v))
+                            .unwrap_or(fallback_type(&tname))
+
+                    // ── 兜底：未知类型按字符串处理 ─────────────────
                     } else {
                         row.try_get::<String, _>(i)
                             .map(|v| serde_json::json!(v))
-                            .unwrap_or_else(|_| {
-                                serde_json::json!(format!("[{}]", val.type_info().name()))
-                            })
+                            .unwrap_or(fallback_type(&tname))
                     }
                 })
                 .collect()
         })
         .collect()
 }
+
+/// 兜底处理：返回 [TypeName] 格式的调试信息，而非 panic 或 Null
+fn fallback_type(type_name: &str) -> serde_json::Value {
+    format!("[{}]", type_name).into()
+}
+

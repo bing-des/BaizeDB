@@ -12,7 +12,7 @@ mod mysql_target;
 
 use tauri::{State, AppHandle, Emitter};
 use crate::state::{AppState, DbPool};
-use crate::commands::database::ensure_pg_db_pool;
+use crate::state::ensure_pg_db_pool;
 use mysql_source::MySQLDataSource;
 use mysql_target::MySQLTarget;
 use postgres_source::PostgreSQLDataSource;
@@ -32,23 +32,19 @@ async fn create_data_source(
     database: &str,
 ) -> Result<Box<dyn DataSource + Send + Sync>, String> {
     // 对于 PostgreSQL 数据源，需要使用 db_pools（按目标数据库创建的连接池）
-    let pool = {
-        let pools = state.pools.read().await;
-        match pools.get(connection_id) {
-            Some(DbPool::PostgreSQL(_)) => {
-                // PG：使用 db_pools 获取指定数据库的连接池
-                drop(pools);
-                let db_key = ensure_pg_db_pool(connection_id, database, state).await?;
-                let db_pools = state.db_pools.read().await;
-                db_pools.get(&db_key).cloned().ok_or_else(|| "PG 数据库连接池未找到".to_string())?
-            }
-            Some(_) => {
-                // MySQL/Redis：直接使用主连接池
-                pools.get(connection_id).cloned().unwrap()
-            }
-            None => return Err("连接未激活".to_string()),
+    let pools = state.pools.read().await;
+    let main_pool = pools.get(connection_id).ok_or("连接未激活")?.clone();
+    drop(pools);
+
+    let pool = match main_pool {
+        DbPool::PostgreSQL(_) => {
+            // PG：获取指定数据库的连接池
+            let pg_pool = ensure_pg_db_pool(state, connection_id, database).await?;
+            DbPool::PostgreSQL(pg_pool)
         }
+        other => other,
     };
+
     match pool {
         DbPool::MySQL(_) => Ok(Box::new(MySQLDataSource::from_pool(&pool)?)),
         DbPool::PostgreSQL(_) => Ok(Box::new(PostgreSQLDataSource::from_pool(&pool)?)),
@@ -81,10 +77,8 @@ async fn create_data_target(
         }
         crate::state::DbType::PostgreSQL => {
             // PG：为目标数据库创建独立连接池，确保连接到正确的 database
-            let db_key = ensure_pg_db_pool(connection_id, database, state).await?;
-            let db_pools = state.db_pools.read().await;
-            let pool = db_pools.get(&db_key).cloned().ok_or_else(|| "PG 数据库连接池未找到".to_string())?;
-            Ok(Box::new(PostgreSQLTarget::from_pool(&pool)?))
+            let pg_pool = ensure_pg_db_pool(state, connection_id, database).await?;
+            Ok(Box::new(PostgreSQLTarget::from_pool(&DbPool::PostgreSQL(pg_pool))?))
         }
         _ => Err("不支持的目标数据库类型".to_string()),
     }

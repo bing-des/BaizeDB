@@ -1,9 +1,10 @@
 use tauri::State;
 use serde::{Deserialize, Serialize};
-use sqlx::{Column, Row, TypeInfo, ValueRef, Executor};
 
-use crate::state::{AppState, DbPool};
+use crate::state::{AppState};
+use crate::database::db_ops::QueryResult as DbQueryResult;
 
+/// 前端兼容的查询结果（Tauri 命令直接返回此结构）
 #[derive(Debug, Serialize)]
 pub struct QueryResult {
     pub columns: Vec<String>,
@@ -11,6 +12,26 @@ pub struct QueryResult {
     pub affected_rows: Option<u64>,
     pub execution_time_ms: u64,
     pub error: Option<String>,
+}
+
+impl From<DbQueryResult> for QueryResult {
+    fn from(r: DbQueryResult) -> Self {
+        Self {
+            columns: r.columns,
+            rows: r.rows,
+            affected_rows: r.affected_rows,
+            execution_time_ms: r.execution_time_ms,
+            error: r.error,
+        }
+    }
+}
+
+/// 判断 SQL 是否为读操作
+fn is_read_query(sql: &str) -> bool {
+    let upper = sql.trim().to_uppercase();
+    upper.starts_with("SELECT") || upper.starts_with("SHOW")
+        || upper.starts_with("DESCRIBE") || upper.starts_with("DESC")
+        || upper.starts_with("EXPLAIN") || upper.starts_with("WITH")
 }
 
 #[tauri::command]
@@ -21,130 +42,59 @@ pub async fn execute_query(
     state: State<'_, AppState>,
 ) -> std::result::Result<QueryResult, String> {
     let start = std::time::Instant::now();
-    let upper = sql.trim().to_uppercase();
-    let is_read = upper.starts_with("SELECT") || upper.starts_with("SHOW")
-        || upper.starts_with("DESCRIBE") || upper.starts_with("DESC")
-        || upper.starts_with("EXPLAIN") || upper.starts_with("WITH");
+    let is_read = is_read_query(&sql);
 
     println!("Executing query on connection {}: {} isRead: {}", connection_id, sql, is_read);
 
-    // 判断连接类型
-    let db_type = {
-        let conns = state.connections.read().await;
-        let cfg = conns.get(&connection_id).ok_or("连接配置不存在")?;
-        cfg.db_type.clone()
+    // 获取连接池
+    let pool = {
+        let pools = state.pools.read().await;
+        pools.get(&connection_id).cloned().ok_or("连接未激活，请先连接数据库")?
     };
 
-    match db_type {
-        crate::state::DbType::MySQL => {
-            let pools = state.pools.read().await;
-            let pool = pools.get(&connection_id).ok_or("连接未激活，请先连接数据库")?;
-            let p = match pool { DbPool::MySQL(p) => p, _ => unreachable!() };
-
-            // 如果指定了 database，先 USE database（使用原始查询避免预处理协议错误）
-            if let Some(ref db) = database {
-                let use_sql = format!("USE `{}`", db);
-                // 从池中获取一个连接，执行 USE，然后使用该连接执行后续查询
-                let mut conn = p.acquire().await.map_err(|e| e.to_string())?;
-                conn.execute(&*use_sql).await.map_err(|e| e.to_string())?;
-                // 使用同一个连接执行后续查询
-                let executor = &mut *conn;
-                if is_read {
-                    match sqlx::query(&sql).fetch_all(executor).await {
-                        Ok(rows) => {
-                            let ms = start.elapsed().as_millis() as u64;
-                            if rows.is_empty() {
-                                return Ok(QueryResult { columns: vec![], rows: vec![], affected_rows: None, execution_time_ms: ms, error: None });
-                            }
-                            let columns: Vec<String> = rows[0].columns().iter().map(|c| c.name().to_string()).collect();
-                            let data = mysql_to_json(&rows);
-                            Ok(QueryResult { columns, rows: data, affected_rows: None, execution_time_ms: ms, error: None })
-                        }
-                        Err(e) => Ok(QueryResult { columns: vec![], rows: vec![], affected_rows: None, execution_time_ms: start.elapsed().as_millis() as u64, error: Some(e.to_string()) }),
-                    }
-                } else {
-                    match sqlx::query(&sql).execute(executor).await {
-                        Ok(r) => Ok(QueryResult { columns: vec![], rows: vec![], affected_rows: Some(r.rows_affected()), execution_time_ms: start.elapsed().as_millis() as u64, error: None }),
-                        Err(e) => Ok(QueryResult { columns: vec![], rows: vec![], affected_rows: None, execution_time_ms: start.elapsed().as_millis() as u64, error: Some(e.to_string()) }),
-                    }
-                }
-            } else {
-                // 没有指定 database，直接使用池
-                if is_read {
-                    match sqlx::query(&sql).fetch_all(p).await {
-                        Ok(rows) => {
-                            let ms = start.elapsed().as_millis() as u64;
-                            if rows.is_empty() {
-                                return Ok(QueryResult { columns: vec![], rows: vec![], affected_rows: None, execution_time_ms: ms, error: None });
-                            }
-                            let columns: Vec<String> = rows[0].columns().iter().map(|c| c.name().to_string()).collect();
-                            let data = mysql_to_json(&rows);
-                            Ok(QueryResult { columns, rows: data, affected_rows: None, execution_time_ms: ms, error: None })
-                        }
-                        Err(e) => Ok(QueryResult { columns: vec![], rows: vec![], affected_rows: None, execution_time_ms: start.elapsed().as_millis() as u64, error: Some(e.to_string()) }),
-                    }
-                } else {
-                    match sqlx::query(&sql).execute(p).await {
-                        Ok(r) => Ok(QueryResult { columns: vec![], rows: vec![], affected_rows: Some(r.rows_affected()), execution_time_ms: start.elapsed().as_millis() as u64, error: None }),
-                        Err(e) => Ok(QueryResult { columns: vec![], rows: vec![], affected_rows: None, execution_time_ms: start.elapsed().as_millis() as u64, error: Some(e.to_string()) }),
-                    }
-                }
-            }
+    // PG 需要指定 database 来获取正确的连接池；MySQL 传空字符串即可
+    // 对于 query 场景，如果前端没传 database，尝试用连接的默认数据库
+    let db_name = match database {
+        Some(db) => db,
+        None => {
+            // 尝试从连接配置获取默认数据库
+            let conns = state.connections.read().await;
+            conns.get(&connection_id)
+                .and_then(|c| c.database.clone())
+                .unwrap_or_default()
         }
-        crate::state::DbType::PostgreSQL => {
-            // PG: 如果指定了 database，用 db_pools；否则用主 pools
-            let db_key = if let Some(ref db) = database {
-                Some(format!("{}:{}", connection_id, db))
-            } else {
-                None
-            };
+    };
 
-            // 确保 db_pool 存在
-            if let Some(ref key) = db_key {
-                let db_pools = state.db_pools.read().await;
-                if !db_pools.contains_key(key) {
-                    drop(db_pools);
-                    let db = database.as_ref().unwrap();
-                    crate::commands::database::ensure_pg_db_pool(&connection_id, db, &state).await?;
-                }
-            }
-
-            let p = if let Some(ref key) = db_key {
-                let db_pools = state.db_pools.read().await;
-                match db_pools.get(key) {
-                    Some(DbPool::PostgreSQL(p)) => p.clone(),
-                    _ => return Err("数据库连接池未找到".to_string()),
-                }
-            } else {
-                let pools = state.pools.read().await;
-                match pools.get(&connection_id) {
-                    Some(DbPool::PostgreSQL(p)) => p.clone(),
-                    _ => return Err("连接未激活，请先连接数据库".to_string()),
-                }
-            };
-
-            if is_read {
-                    match sqlx::query(&sql).fetch_all(&p).await {
-                        Ok(rows) => {
-                            let ms = start.elapsed().as_millis() as u64;
-                            if rows.is_empty() {
-                                return Ok(QueryResult { columns: vec![], rows: vec![], affected_rows: None, execution_time_ms: ms, error: None });
-                        }
-                        let columns: Vec<String> = rows[0].columns().iter().map(|c| c.name().to_string()).collect();
-                        let data = pg_to_json(&rows);
-                        Ok(QueryResult { columns, rows: data, affected_rows: None, execution_time_ms: ms, error: None })
-                    }
-                    Err(e) => Ok(QueryResult { columns: vec![], rows: vec![], affected_rows: None, execution_time_ms: start.elapsed().as_millis() as u64, error: Some(e.to_string()) }),
-                }
-            } else {
-                match sqlx::query(&sql).execute(&p).await {
-                    Ok(r) => Ok(QueryResult { columns: vec![], rows: vec![], affected_rows: Some(r.rows_affected()), execution_time_ms: start.elapsed().as_millis() as u64, error: None }),
-                    Err(e) => Ok(QueryResult { columns: vec![], rows: vec![], affected_rows: None, execution_time_ms: start.elapsed().as_millis() as u64, error: Some(e.to_string()) }),
-                }
-            }
+    // 如果 db_name 仍然为空且是 MySQL，允许不指定（MySQL 可以在无默认库时执行某些查询）
+    // 但 PG 必须要有 database
+    if db_name.is_empty() {
+        let conns = state.connections.read().await;
+        let cfg = conns.get(&connection_id).ok_or("连接配置不存在")?;
+        if cfg.db_type == crate::state::DbType::PostgreSQL {
+            drop(conns);
+            return Err("PostgreSQL 查询需要指定数据库".into());
         }
-        crate::state::DbType::Redis => Err("Redis 不支持 SQL 查询".to_string()),
+        drop(conns);
     }
+
+    let db_ops = pool.as_db_ops(&state, &connection_id, &db_name).await?;
+
+    let result: DbQueryResult = if is_read {
+        db_ops.query_sql(&sql).await?
+    } else {
+        let affected = db_ops.execute_sql(&sql).await?;
+        let ms = start.elapsed().as_millis() as u64;
+        DbQueryResult {
+            columns: vec![],
+            rows: vec![],
+            affected_rows: Some(affected),
+            execution_time_ms: ms,
+            error: None,
+            total: None,
+        }
+    };
+
+    Ok(result.into())
 }
 
 #[derive(Debug, Deserialize)]
@@ -164,67 +114,4 @@ pub async fn execute_query_paged(
     let offset = (input.page - 1) * input.page_size;
     let paged = format!("{} LIMIT {} OFFSET {}", input.sql.trim_end_matches(';'), input.page_size, offset);
     execute_query(input.connection_id, paged, input.database, state).await
-}
-
-fn mysql_to_json(rows: &[sqlx::mysql::MySqlRow]) -> Vec<Vec<serde_json::Value>> {
-    rows.iter().map(|row| {
-        row.columns().iter().map(|col| {
-            let val = row.try_get_raw(col.ordinal()).unwrap();
-            if val.is_null() { return serde_json::Value::Null; }
-            match val.type_info().name() {
-                "INT" | "BIGINT" | "SMALLINT" | "TINYINT" | "MEDIUMINT"
-                | "INT UNSIGNED" | "BIGINT UNSIGNED" =>
-                    row.try_get::<i64, _>(col.ordinal()).map(|v| serde_json::json!(v)).unwrap_or(serde_json::Value::Null),
-                "FLOAT" | "DOUBLE" | "DECIMAL" =>
-                    row.try_get::<f64, _>(col.ordinal()).map(|v| serde_json::json!(v)).unwrap_or(serde_json::Value::Null),
-                "BOOLEAN" =>
-                    row.try_get::<bool, _>(col.ordinal()).map(|v| serde_json::json!(v)).unwrap_or(serde_json::Value::Null),
-                _ =>
-                    row.try_get::<String, _>(col.ordinal()).map(|v| serde_json::json!(v)).unwrap_or(serde_json::Value::Null),
-            }
-        }).collect()
-    }).collect()
-}
-
-fn pg_to_json(rows: &[sqlx::postgres::PgRow]) -> Vec<Vec<serde_json::Value>> {
-    rows.iter().map(|row| {
-        row.columns().iter().map(|col| {
-            let val = row.try_get_raw(col.ordinal()).unwrap();
-            if val.is_null() { return serde_json::Value::Null; }
-            match val.type_info().name() {
-                "INT2" | "INT4" | "INT8" =>
-                    row.try_get::<i64, _>(col.ordinal()).map(|v| serde_json::json!(v)).unwrap_or(serde_json::Value::Null),
-                "FLOAT4" | "FLOAT8" | "NUMERIC" =>
-                    row.try_get::<f64, _>(col.ordinal()).map(|v| serde_json::json!(v)).unwrap_or(serde_json::Value::Null),
-                "BOOL" =>
-                    row.try_get::<bool, _>(col.ordinal()).map(|v| serde_json::json!(v)).unwrap_or(serde_json::Value::Null),
-                "TIMESTAMP" =>
-                    row.try_get::<chrono::NaiveDateTime, _>(col.ordinal())
-                        .map(|v| serde_json::json!(v.to_string()))
-                        .unwrap_or_else(|_| serde_json::json!(format!("[{}]", val.type_info().name()))),
-                "TIMESTAMPTZ" =>
-                    row.try_get::<chrono::DateTime<chrono::Utc>, _>(col.ordinal())
-                        .map(|v| serde_json::json!(v.to_string()))
-                        .unwrap_or_else(|_| serde_json::json!(format!("[{}]", val.type_info().name()))),
-                "DATE" =>
-                    row.try_get::<chrono::NaiveDate, _>(col.ordinal())
-                        .map(|v| serde_json::json!(v.to_string()))
-                        .unwrap_or_else(|_| serde_json::json!(format!("[{}]", val.type_info().name()))),
-                "TIME" =>
-                    row.try_get::<chrono::NaiveTime, _>(col.ordinal())
-                        .map(|v| serde_json::json!(v.to_string()))
-                        .unwrap_or_else(|_| serde_json::json!(format!("[{}]", val.type_info().name()))),
-                "UUID" =>
-                    row.try_get::<uuid::Uuid, _>(col.ordinal())
-                        .map(|v| serde_json::json!(v.to_string()))
-                        .unwrap_or_else(|_| serde_json::json!(format!("[{}]", val.type_info().name()))),
-                "JSON" | "JSONB" =>
-                    row.try_get::<serde_json::Value, _>(col.ordinal())
-                        .map(|v| serde_json::json!(v.to_string()))
-                        .unwrap_or_else(|_| serde_json::json!(format!("[{}]", val.type_info().name()))),
-                _ =>
-                    row.try_get::<String, _>(col.ordinal()).map(|v| serde_json::json!(v)).unwrap_or(serde_json::Value::Null),
-            }
-        }).collect()
-    }).collect()
 }

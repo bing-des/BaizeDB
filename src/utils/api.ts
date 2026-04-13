@@ -26,11 +26,17 @@ export const connectionApi = {
     invoke<ConnectionConfig[]>('list_connections'),
   test: (input: NewConnectionInput) =>
     invoke<string>('test_connection', { input }),
-  /** 连接，configs 可选（重启后重连时需要传入以便恢复连接池） */
-  connect: (id: string, configs?: ConnectionConfig[]) =>
-    invoke<void>('connect_db', { id, options: configs ? { configs } : null }),
+  /** 连接数据库（后端已自动从磁盘加载配置，无需传 configs） */
+  connect: (id: string) =>
+    invoke<void>('connect_db', { id, options: null }),
   disconnect: (id: string) =>
     invoke<void>('disconnect_db', { id }),
+  /** 手动保存连接配置到磁盘 */
+  save: () =>
+    invoke<void>('save_connections'),
+  /** 从磁盘重新加载连接配置 */
+  load: () =>
+    invoke<ConnectionConfig[]>('load_connections'),
 };
 
 export const databaseApi = {

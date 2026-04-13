@@ -3,7 +3,7 @@
 
 mod commands;
 mod state;
-mod error;
+mod store;
 
 use state::AppState;
 use tauri::Manager;
@@ -14,7 +14,9 @@ fn main() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
-        .manage(AppState::new())
+        .manage(AppState::new(
+            std::sync::Arc::new(store::connection_store::SqliteConnectionStore::new()),
+        ))
         .invoke_handler(tauri::generate_handler![
             commands::connection::add_connection,
             commands::connection::remove_connection,
@@ -22,6 +24,8 @@ fn main() {
             commands::connection::list_connections,
             commands::connection::connect_db,
             commands::connection::disconnect_db,
+            commands::connection::save_connections,
+            commands::connection::load_connections,
             commands::database::list_databases,
             commands::database::list_schemas,
             commands::database::list_tables,
@@ -40,6 +44,23 @@ fn main() {
         .setup(|app| {
             let window = app.get_webview_window("main").unwrap();
             window.set_title("BaizeDB").unwrap();
+
+            // 初始化存储层（建表 + 加载连接配置到内存）
+            let state = app.state::<AppState>();
+            tauri::async_runtime::block_on(async {
+                let loaded = store::init_store(&state.store, app)
+                    .await
+                    .expect("初始化存储层失败");
+
+                // 写入内存 HashMap
+                let mut conns = state.connections.write().await;
+                for conn in &loaded {
+                    conns.insert(conn.id.clone(), conn.clone());
+                }
+                drop(conns);
+                log::info!("加载了 {} 个连接配置", loaded.len());
+            });
+
             Ok(())
         })
         .run(tauri::generate_context!())

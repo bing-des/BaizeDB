@@ -49,19 +49,26 @@ pub enum DbPool {
 }
 
 pub struct AppState {
+    /// 运行时连接配置缓存（供快速查询）
     pub connections: Arc<RwLock<HashMap<String, ConnectionConfig>>>,
     /// 主连接池（connection_id → pool）
     pub pools: Arc<RwLock<HashMap<String, DbPool>>>,
+
     /// 数据库级别连接池（"connection_id:database" → pool），PG 展开不同库时按需创建
     pub db_pools: Arc<RwLock<HashMap<String, DbPool>>>,
+    /// 连接配置存储（trait 对象，屏蔽底层实现）
+    pub store: Arc<crate::store::connection_store::SqliteConnectionStore>,
 }
 
 impl AppState {
-    pub fn new() -> Self {
+    pub fn new(
+        store: Arc<crate::store::connection_store::SqliteConnectionStore>,
+    ) -> Self {
         Self {
             connections: Arc::new(RwLock::new(HashMap::new())),
             pools: Arc::new(RwLock::new(HashMap::new())),
             db_pools: Arc::new(RwLock::new(HashMap::new())),
+            store,
         }
     }
 }

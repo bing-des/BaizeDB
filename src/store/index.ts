@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import type { ConnectionConfig, Tab } from '../types';
+import { connectionApi } from '../utils/api';
 
 interface ConnectionState {
   connections: ConnectionConfig[];
@@ -10,34 +11,37 @@ interface ConnectionState {
   removeConnection: (id: string) => void;
   setActiveConnection: (id: string | null) => void;
   setConnected: (id: string, connected: boolean) => void;
+  loadFromBackend: () => Promise<void>;
 }
 
 export const useConnectionStore = create<ConnectionState>()(
-  persist(
-    (set) => ({
-      connections: [],
-      activeConnectionId: null,
-      connectedIds: new Set(),
-      addConnection: (conn) =>
-        set((state) => ({ connections: [...state.connections, conn] })),
-      removeConnection: (id) =>
-        set((state) => ({
-          connections: state.connections.filter((c) => c.id !== id),
-          activeConnectionId: state.activeConnectionId === id ? null : state.activeConnectionId,
-        })),
-      setActiveConnection: (id) => set({ activeConnectionId: id }),
-      setConnected: (id, connected) =>
-        set((state) => {
-          const next = new Set(state.connectedIds);
-          connected ? next.add(id) : next.delete(id);
-          return { connectedIds: next };
-        }),
-    }),
-    {
-      name: 'baizedb-connections',
-      partialize: (state) => ({ connections: state.connections }),
-    }
-  )
+  (set) => ({
+    connections: [],
+    activeConnectionId: null,
+    connectedIds: new Set(),
+    addConnection: (conn) =>
+      set((state) => ({ connections: [...state.connections, conn] })),
+    removeConnection: (id) =>
+      set((state) => ({
+        connections: state.connections.filter((c) => c.id !== id),
+        activeConnectionId: state.activeConnectionId === id ? null : state.activeConnectionId,
+      })),
+    setActiveConnection: (id) => set({ activeConnectionId: id }),
+    setConnected: (id, connected) =>
+      set((state) => {
+        const next = new Set(state.connectedIds);
+        connected ? next.add(id) : next.delete(id);
+        return { connectedIds: next };
+      }),
+    loadFromBackend: async () => {
+      try {
+        const conns = await connectionApi.list();
+        set({ connections: conns });
+      } catch (e) {
+        console.error('从后端加载连接配置失败:', e);
+      }
+    },
+  })
 );
 
 interface TabState {

@@ -126,6 +126,7 @@ pub async fn start_migration_v2(
         connections: state.connections.clone(),
         pools: state.pools.clone(),
         db_pools: state.db_pools.clone(),
+        store: state.store.clone(),
     };
     let app_handle_inner = app_handle.clone();
 

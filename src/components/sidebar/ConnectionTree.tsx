@@ -69,7 +69,7 @@ export default function ConnectionTree() {
     }
     setConnecting(conn.id);
     try {
-      await connectionApi.connect(conn.id, connections);
+      await connectionApi.connect(conn.id);
       setConnected(conn.id, true);
       updateConn(conn.id, (n) => ({ ...n, expanded: true, loading: true }));
 

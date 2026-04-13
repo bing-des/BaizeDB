@@ -3,6 +3,7 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::state::{AppState, ConnectionConfig, DbPool, DbType};
+use crate::store::connection_store::ConnectionStore;
 
 #[derive(Debug, Deserialize)]
 pub struct NewConnectionInput {
@@ -27,7 +28,7 @@ pub struct ConnectOptions {
 pub async fn add_connection(
     input: NewConnectionInput,
     state: State<'_, AppState>,
-) -> std::result::Result<ConnectionConfig, String> {
+) -> Result<ConnectionConfig, String> {
     let config = ConnectionConfig {
         id: Uuid::new_v4().to_string(),
         name: input.name,
@@ -40,8 +41,15 @@ pub async fn add_connection(
         ssl: input.ssl,
     };
 
-    let mut conns = state.connections.write().await;
-    conns.insert(config.id.clone(), config.clone());
+    // 通过存储层持久化
+    state.store.insert(&config).await?;
+
+    // 同步到内存 HashMap（供运行时快速查询）
+    {
+        let mut conns = state.connections.write().await;
+        conns.insert(config.id.clone(), config.clone());
+    }
+
     Ok(config)
 }
 
@@ -49,18 +57,26 @@ pub async fn add_connection(
 pub async fn remove_connection(
     id: String,
     state: State<'_, AppState>,
-) -> std::result::Result<(), String> {
-    let mut conns = state.connections.write().await;
-    conns.remove(&id);
-    let mut pools = state.pools.write().await;
-    pools.remove(&id);
+) -> Result<(), String> {
+    // 通过存储层删除
+    state.store.delete(&id).await?;
+
+    // 同步移除内存 HashMap + 关闭连接池
+    {
+        let mut conns = state.connections.write().await;
+        conns.remove(&id);
+        let mut pools = state.pools.write().await;
+        pools.remove(&id);
+    }
+
     Ok(())
 }
 
 #[tauri::command]
 pub async fn list_connections(
     state: State<'_, AppState>,
-) -> std::result::Result<Vec<ConnectionConfig>, String> {
+) -> Result<Vec<ConnectionConfig>, String> {
+    // 直接从内存 HashMap 返回（启动时已从 store 加载）
     let conns = state.connections.read().await;
     let mut list: Vec<ConnectionConfig> = conns.values().cloned().collect();
     list.sort_by(|a, b| a.name.cmp(&b.name));
@@ -77,19 +93,13 @@ pub async fn test_connection(
     match input.db_type {
         DbType::MySQL => {
             match sqlx::MySqlPool::connect(&url).await {
-                Ok(pool) => {
-                    pool.close().await;
-                    Ok("连接成功".to_string())
-                }
+                Ok(pool) => { pool.close().await; Ok("连接成功".to_string()) }
                 Err(e) => Err(format!("连接失败: {}", e)),
             }
         }
         DbType::PostgreSQL => {
             match sqlx::PgPool::connect(&url).await {
-                Ok(pool) => {
-                    pool.close().await;
-                    Ok("连接成功".to_string())
-                }
+                Ok(pool) => { pool.close().await; Ok("连接成功".to_string()) }
                 Err(e) => Err(format!("连接失败: {}", e)),
             }
         }
@@ -98,7 +108,7 @@ pub async fn test_connection(
             match redis::Client::open(redis_url.as_str()) {
                 Ok(client) => {
                     match client.get_multiplexed_async_connection().await {
-                        Ok(_conn) => Ok("连接成功".to_string()),
+                        Ok(_) => Ok("连接成功".to_string()),
                         Err(e) => Err(format!("连接失败: {}", e)),
                     }
                 }
@@ -115,7 +125,6 @@ pub async fn connect_db(
     options: Option<ConnectOptions>,
 ) -> std::result::Result<(), String> {
     // 优先从内存中取（正常连接流程）；内存中没有则用传入的配置（重启后重连）
-    // 优先从内存中取；内存中没有则从传入的配置列表中查找（重启后重连场景）
     let config = {
         let conns = state.connections.read().await;
         match conns.get(&id).cloned() {
@@ -125,7 +134,7 @@ pub async fn connect_db(
                     .and_then(|o| o.configs)
                     .and_then(|configs| configs.into_iter().find(|c| c.id == id))
                     .ok_or_else(|| format!("连接不存在: {}", id))?;
-                (cfg, true) // 需要写回 connections map
+                (cfg, true)
             }
         }
     };
@@ -202,6 +211,37 @@ pub async fn disconnect_db(
     Ok(())
 }
 
+/// 从存储层重新加载连接配置到内存
+#[tauri::command]
+pub async fn load_connections(
+    state: State<'_, AppState>,
+) -> Result<Vec<ConnectionConfig>, String> {
+    let conns = state.store.list_all().await?;
+
+    // 写入内存 HashMap
+    {
+        let mut connections = state.connections.write().await;
+        connections.clear();
+        for conn in &conns {
+            connections.insert(conn.id.clone(), conn.clone());
+        }
+    }
+
+    Ok(conns)
+}
+
+/// 手动触发保存（SQLite 已自动持久化，此接口保留兼容）
+#[tauri::command]
+pub async fn save_connections(
+    _state: State<'_, AppState>,
+) -> Result<(), String> {
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// URL 构建辅助
+// ---------------------------------------------------------------------------
+
 fn build_url(db_type: &DbType, host: &str, port: u16, user: &str, pass: &str, db: Option<&str>) -> String {
     match db_type {
         DbType::MySQL => {
@@ -213,7 +253,6 @@ fn build_url(db_type: &DbType, host: &str, port: u16, user: &str, pass: &str, db
             format!("postgres://{}:{}@{}:{}/{}", user, pass, host, port, db_part)
         }
         DbType::Redis => {
-            // Redis URL 不从这里构建，用 build_redis_url
             build_redis_url(host, port, pass, db)
         }
     }

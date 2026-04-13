@@ -1,9 +1,10 @@
 import { useEffect } from 'react';
-import { useThemeStore } from './store';
+import { useThemeStore, useConnectionStore } from './store';
 import MainLayout from './components/layout/MainLayout';
 
 function App() {
   const { theme } = useThemeStore();
+  const loadFromBackend = useConnectionStore((s) => s.loadFromBackend);
 
   // 主题
   useEffect(() => {
@@ -17,6 +18,11 @@ function App() {
       isDark ? root.classList.add('dark') : root.classList.remove('dark');
     }
   }, [theme]);
+
+  // 启动时从后端加载连接配置（后端已从磁盘读取）
+  useEffect(() => {
+    loadFromBackend();
+  }, [loadFromBackend]);
 
   return <MainLayout />;
 }

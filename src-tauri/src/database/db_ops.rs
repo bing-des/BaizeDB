@@ -86,6 +86,9 @@ pub trait DbOps: Send + Sync {
         table: &str,
         page: i64,
         page_size: i64,
+        sort_by: Option<String>,
+        sort_order: Option<String>,
+        filters: Option<std::collections::HashMap<String, String>>,
     ) -> Result<QueryResult, String>;
 
     /// 获取表行数

@@ -1,6 +1,14 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { Copy, Pencil, Trash2 } from 'lucide-react';
+import { Copy, Pencil, Trash2, Filter } from 'lucide-react';
 import ContextMenu, { type MenuEntry } from '../common/ContextMenu';
+
+type FilterOp = '=' | '!=' | '>' | '<' | '>=' | '<=' | 'LIKE' | 'NOT LIKE' | 'IS NULL' | 'IS NOT NULL';
+
+interface FilterCondition {
+  column: string;
+  op: FilterOp;
+  value: string;
+}
 
 interface Props {
   columns: string[];
@@ -23,6 +31,18 @@ interface Props {
   onEdit?: (rowIndex: number, colIndex: number) => void;
   /** 右键菜单：删除回调 */
   onDelete?: (rowIndex: number) => void;
+  /** 排序列索引 */
+  sortColumn?: number | null;
+  /** 排序方向 */
+  sortDirection?: 'asc' | 'desc';
+  /** 排序切换回调 */
+  onSort?: (colIndex: number) => void;
+  /** 过滤条件 */
+  filterConditions?: Record<string, FilterCondition>;
+  /** 过滤条件变更回调 */
+  onFilterChange?: (column: string, condition: FilterCondition | null) => void;
+  /** 应用过滤回调 */
+  onApplyFilters?: () => void;
 }
 
 export default function ResultTable({
@@ -37,6 +57,12 @@ export default function ResultTable({
   onCopy,
   onEdit,
   onDelete,
+  sortColumn,
+  sortDirection,
+  onSort,
+  filterConditions = {},
+  onFilterChange,
+  onApplyFilters,
 }: Props) {
   // 编辑状态
   const [editingCell, setEditingCell] = useState<{ row: number; col: number } | null>(null);
@@ -51,6 +77,11 @@ export default function ResultTable({
 
   // 右键菜单状态
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; row: number; col: number } | null>(null);
+
+  // 筛选下拉框状态
+  const [filterDropdown, setFilterDropdown] = useState<{ col: string; x: number; y: number } | null>(null);
+  const [tempFilterOp, setTempFilterOp] = useState<FilterOp>('=');
+  const [tempFilterValue, setTempFilterValue] = useState('');
 
   // 双击进入编辑模式
   const handleDoubleClick = useCallback((rowIndex: number, colIndex: number) => {
@@ -237,15 +268,53 @@ export default function ResultTable({
     <>
       <table className="min-w-full text-xs border-collapse" style={{ userSelect: 'none' }}>
         <thead className="sticky top-0 z-10">
+          {/* 表头行：列名 + 排序 + 漏斗筛选 */}
           <tr className="bg-[var(--bg-tertiary)]">
             <th className="px-2 py-1.5 text-right text-[var(--text-muted)] font-mono border-b border-r border-[var(--border)] w-10 select-none">
               #
             </th>
-            {columns.map((col) => (
-              <th key={col} className="px-3 py-1.5 text-left font-semibold text-[var(--text-secondary)] border-b border-r border-[var(--border)] whitespace-nowrap">
-                {col}
-              </th>
-            ))}
+            {columns.map((col, idx) => {
+              const cond = filterConditions[col];
+              const hasFilter = cond && (cond.value || cond.op === 'IS NULL' || cond.op === 'IS NOT NULL');
+              return (
+                <th
+                  key={col}
+                  className={`px-3 py-1.5 text-left font-semibold text-[var(--text-secondary)] border-b border-r border-[var(--border)] whitespace-nowrap select-none hover:bg-[var(--bg-secondary)] transition-colors ${
+                    sortColumn === idx ? 'bg-brand-500/10' : ''
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-1">
+                    <div
+                      className="flex items-center gap-1 cursor-pointer flex-1"
+                      onClick={() => onSort?.(idx)}
+                    >
+                      {col}
+                      {sortColumn === idx && (
+                        <span className="text-brand-400">
+                          {sortDirection === 'asc' ? '▲' : '▼'}
+                        </span>
+                      )}
+                    </div>
+                    {/* 漏斗图标 */}
+                    <button
+                      className={`p-0.5 rounded hover:bg-[var(--bg-secondary)] transition-colors ${
+                        hasFilter ? 'text-yellow-400' : 'text-[var(--text-muted)] hover:text-[var(--text-secondary)]'
+                      }`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        const rect = (e.currentTarget as HTMLButtonElement).getBoundingClientRect();
+                        setFilterDropdown({ col, x: rect.left, y: rect.bottom + 4 });
+                        setTempFilterOp(cond?.op || '=');
+                        setTempFilterValue(cond?.value || '');
+                      }}
+                      title="筛选"
+                    >
+                      <Filter size={12} />
+                    </button>
+                  </div>
+                </th>
+              );
+            })}
           </tr>
         </thead>
         <tbody>
@@ -315,6 +384,98 @@ export default function ResultTable({
           items={contextMenuItems}
           onClose={() => setContextMenu(null)}
         />
+      )}
+
+      {/* 筛选下拉框 */}
+      {filterDropdown && (
+        <>
+          {/* 遮罩层 */}
+          <div
+            className="fixed inset-0 z-40"
+            onClick={() => setFilterDropdown(null)}
+          />
+          {/* 下拉框 */}
+          <div
+            className="fixed z-50 bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg shadow-lg p-3 min-w-[200px]"
+            style={{ left: filterDropdown.x, top: filterDropdown.y }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="text-xs font-medium text-[var(--text-secondary)] mb-2">
+              筛选: {filterDropdown.col}
+            </div>
+            <div className="space-y-2">
+              <select
+                className="w-full text-xs bg-[var(--bg-secondary)] border border-[var(--border)] rounded px-2 py-1.5 outline-none focus:border-brand-400/50"
+                value={tempFilterOp}
+                onChange={(e) => setTempFilterOp(e.target.value as FilterOp)}
+              >
+                <option value="=">等于 (=)</option>
+                <option value="!=">不等于 (!=)</option>
+                <option value=">">大于 ({'>'})</option>
+                <option value="<">小于 ({'<'})</option>
+                <option value=">=">大于等于 ({'>='})</option>
+                <option value="<=">小于等于 ({'<='})</option>
+                <option value="LIKE">包含 (LIKE)</option>
+                <option value="NOT LIKE">不包含 (NOT LIKE)</option>
+                <option value="IS NULL">为空 (IS NULL)</option>
+                <option value="IS NOT NULL">不为空 (IS NOT NULL)</option>
+              </select>
+              {tempFilterOp !== 'IS NULL' && tempFilterOp !== 'IS NOT NULL' && (
+                <input
+                  type="text"
+                  className="w-full text-xs bg-[var(--bg-secondary)] border border-[var(--border)] rounded px-2 py-1.5 outline-none focus:border-brand-400/50 font-mono"
+                  placeholder={tempFilterOp === 'LIKE' || tempFilterOp === 'NOT LIKE' ? '%keyword%' : '输入值...'}
+                  value={tempFilterValue}
+                  onChange={(e) => setTempFilterValue(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      onFilterChange?.(filterDropdown.col, {
+                        column: filterDropdown.col,
+                        op: tempFilterOp,
+                        value: tempFilterValue
+                      });
+                      setFilterDropdown(null);
+                      onApplyFilters?.();
+                    }
+                  }}
+                  autoFocus
+                />
+              )}
+              <div className="flex gap-2 pt-1">
+                <button
+                  className="flex-1 text-xs bg-brand-500 hover:bg-brand-600 text-white rounded px-3 py-1.5 transition-colors"
+                  onClick={() => {
+                    onFilterChange?.(filterDropdown.col, {
+                      column: filterDropdown.col,
+                      op: tempFilterOp,
+                      value: tempFilterValue
+                    });
+                    setFilterDropdown(null);
+                    onApplyFilters?.();
+                  }}
+                >
+                  确定
+                </button>
+                <button
+                  className="text-xs bg-[var(--bg-secondary)] hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] border border-[var(--border)] rounded px-3 py-1.5 transition-colors"
+                  onClick={() => {
+                    onFilterChange?.(filterDropdown.col, null);
+                    setFilterDropdown(null);
+                    onApplyFilters?.();
+                  }}
+                >
+                  清除
+                </button>
+                <button
+                  className="text-xs bg-[var(--bg-secondary)] hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)] border border-[var(--border)] rounded px-3 py-1.5 transition-colors"
+                  onClick={() => setFilterDropdown(null)}
+                >
+                  取消
+                </button>
+              </div>
+            </div>
+          </div>
+        </>
       )}
     </>
   );

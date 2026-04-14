@@ -1,6 +1,6 @@
-use tauri::State;
-use serde::{Serialize};
 use crate::state::AppState;
+use serde::Serialize;
+use tauri::State;
 
 // ====== 前端兼容的旧结构体（保持 API 不变）======
 
@@ -58,7 +58,10 @@ pub async fn list_databases(
     let db_ops = pool.as_db_ops(&state, &connection_id, "").await?;
     let metas = db_ops.list_databases().await?;
 
-    Ok(metas.into_iter().map(|m| DatabaseInfo { name: m.name }).collect())
+    Ok(metas
+        .into_iter()
+        .map(|m| DatabaseInfo { name: m.name })
+        .collect())
 }
 
 #[tauri::command]
@@ -76,11 +79,14 @@ pub async fn list_tables(
     let db_ops = pool.as_db_ops(&state, &connection_id, &database).await?;
     let metas = db_ops.list_tables(&database, schema.as_deref()).await?;
 
-    Ok(metas.into_iter().map(|m| TableInfo {
-        name: m.name,
-        table_type: m.table_type.unwrap_or_default(),
-        row_count: m.row_count,
-    }).collect())
+    Ok(metas
+        .into_iter()
+        .map(|m| TableInfo {
+            name: m.name,
+            table_type: m.table_type.unwrap_or_default(),
+            row_count: m.row_count,
+        })
+        .collect())
 }
 
 #[tauri::command]
@@ -97,7 +103,10 @@ pub async fn list_schemas(
     let db_ops = pool.as_db_ops(&state, &connection_id, &database).await?;
     let schemas = db_ops.list_schemas(&database).await?;
 
-    Ok(schemas.into_iter().map(|s| SchemaInfo { name: s.name }).collect())
+    Ok(schemas
+        .into_iter()
+        .map(|s| SchemaInfo { name: s.name })
+        .collect())
 }
 
 #[tauri::command]
@@ -115,14 +124,17 @@ pub async fn list_columns(
     let db_ops = pool.as_db_ops(&state, &connection_id, &database).await?;
     let cols = db_ops.list_columns(&database, &table).await?;
 
-    Ok(cols.into_iter().map(|c| ColumnInfo {
-        name: c.name,
-        data_type: c.data_type,
-        nullable: c.nullable,
-        key: c.key,
-        default_value: c.default_value,
-        comment: c.comment,
-    }).collect())
+    Ok(cols
+        .into_iter()
+        .map(|c| ColumnInfo {
+            name: c.name,
+            data_type: c.data_type,
+            nullable: c.nullable,
+            key: c.key,
+            default_value: c.default_value,
+            comment: c.comment,
+        })
+        .collect())
 }
 
 #[tauri::command]
@@ -132,6 +144,9 @@ pub async fn get_table_data(
     table: String,
     page: i64,
     page_size: i64,
+    sort_by: Option<String>,
+    sort_order: Option<String>,
+    filters: Option<std::collections::HashMap<String, String>>,
     state: State<'_, AppState>,
 ) -> std::result::Result<TableDataResult, String> {
     let pool = {
@@ -140,7 +155,11 @@ pub async fn get_table_data(
     };
 
     let db_ops = pool.as_db_ops(&state, &connection_id, &database).await?;
-    let r = db_ops.get_table_data(&database, &table, page, page_size).await?;
+    let r = db_ops
+        .get_table_data(
+            &database, &table, page, page_size, sort_by, sort_order, filters,
+        )
+        .await?;
 
     Ok(TableDataResult {
         columns: r.columns,
@@ -201,7 +220,15 @@ pub async fn update_table_data(
 
     for update in updates {
         let affected = db_ops
-            .update_row(&database, &table, &primary_key, &primary_key_type, update.primary_key_value, update.column_values, update.column_types)
+            .update_row(
+                &database,
+                &table,
+                &primary_key,
+                &primary_key_type,
+                update.primary_key_value,
+                update.column_values,
+                update.column_types,
+            )
             .await?;
         total_affected += affected;
     }
@@ -254,6 +281,12 @@ pub async fn insert_table_data(
     };
 
     let db_ops = pool.as_db_ops(&state, &connection_id, &database).await?;
-    db_ops.insert_row(&database, &table, column_values, column_types.unwrap_or_default()).await
+    db_ops
+        .insert_row(
+            &database,
+            &table,
+            column_values,
+            column_types.unwrap_or_default(),
+        )
+        .await
 }
-

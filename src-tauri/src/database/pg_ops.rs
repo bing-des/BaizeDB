@@ -1,7 +1,7 @@
-use sqlx::{PgPool, Row, Column, ValueRef, TypeInfo};
 use crate::database::db_ops::{
-    ColumnMeta, DatabaseMeta, DbOps, QueryResult, SchemaMeta, TableMeta
+    ColumnMeta, DatabaseMeta, DbOps, QueryResult, SchemaMeta, TableMeta,
 };
+use sqlx::{Column, PgPool, Row, TypeInfo, ValueRef};
 
 impl DbOps for PgPool {
     async fn list_databases(&self) -> Result<Vec<DatabaseMeta>, String> {
@@ -12,7 +12,10 @@ impl DbOps for PgPool {
         .await
         .map_err(|e| e.to_string())?;
 
-        Ok(rows.into_iter().map(|r| DatabaseMeta { name: r.0 }).collect())
+        Ok(rows
+            .into_iter()
+            .map(|r| DatabaseMeta { name: r.0 })
+            .collect())
     }
 
     async fn list_schemas(&self, _database: &str) -> Result<Vec<SchemaMeta>, String> {
@@ -25,13 +28,14 @@ impl DbOps for PgPool {
         .await
         .map_err(|e| e.to_string())?;
 
-        Ok(rows
-            .into_iter()
-            .map(|r| SchemaMeta { name: r.0 })
-            .collect())
+        Ok(rows.into_iter().map(|r| SchemaMeta { name: r.0 }).collect())
     }
 
-    async fn list_tables(&self, _database: &str, schema: Option<&str>) -> Result<Vec<TableMeta>, String> {
+    async fn list_tables(
+        &self,
+        _database: &str,
+        schema: Option<&str>,
+    ) -> Result<Vec<TableMeta>, String> {
         let schema_name = schema.unwrap_or("public");
 
         let rows = sqlx::query_as::<_, (String, String)>(
@@ -74,14 +78,15 @@ impl DbOps for PgPool {
                  WHERE constraint_type = 'PRIMARY KEY' AND table_schema = $1 AND table_name = $2) \
              WHERE c.table_schema = $1 AND c.table_catalog = $3 AND c.table_name = $4 ORDER BY c.ordinal_position";
 
-        let rows = sqlx::query_as::<_, (String, String, String, String, String, String, String)>(sql)
-            .bind(schema_name)
-            .bind(table_name)
-            .bind(database)
-            .bind(table_name)
-            .fetch_all(self)
-            .await
-            .map_err(|e| e.to_string())?;
+        let rows =
+            sqlx::query_as::<_, (String, String, String, String, String, String, String)>(sql)
+                .bind(schema_name)
+                .bind(table_name)
+                .bind(database)
+                .bind(table_name)
+                .fetch_all(self)
+                .await
+                .map_err(|e| e.to_string())?;
 
         Ok(rows
             .into_iter()
@@ -103,24 +108,76 @@ impl DbOps for PgPool {
         table: &str,
         page: i64,
         page_size: i64,
+        sort_by: Option<String>,
+        sort_order: Option<String>,
+        filters: Option<std::collections::HashMap<String, String>>,
     ) -> Result<QueryResult, String> {
         let start = std::time::Instant::now();
         let offset = (page - 1) * page_size;
         let safe_table = pg_safe_table_ref(table);
 
-        let count: i64 = sqlx::query(&format!("SELECT COUNT(*) FROM {}", safe_table))
+        // 构建 WHERE 子句
+        let mut where_clauses = Vec::new();
+        if let Some(filters) = filters {
+            for (col, filter_value) in filters {
+                if !filter_value.is_empty() {
+                    // 解析 "操作符|值" 格式
+                    if let Some((op, val)) = filter_value.split_once('|') {
+                        match op.to_uppercase().as_str() {
+                            "IS NULL" => where_clauses.push(format!("\"{}\" IS NULL", col)),
+                            "IS NOT NULL" => where_clauses.push(format!("\"{}\" IS NOT NULL", col)),
+                            _ => {
+                                let safe_val = val.replace("'", "''");
+                                where_clauses.push(format!("\"{}\" {} '{}'", col, op, safe_val));
+                            }
+                        }
+                    } else {
+                        // 兼容旧格式：纯文本作为值，使用 ILIKE
+                        where_clauses.push(format!(
+                            "\"{}\" ILIKE '%{}%'",
+                            col,
+                            filter_value.replace("'", "''")
+                        ));
+                    }
+                }
+            }
+        }
+        let where_sql = if where_clauses.is_empty() {
+            String::new()
+        } else {
+            format!(" WHERE {}", where_clauses.join(" AND "))
+        };
+
+        // 构建 ORDER BY 子句
+        let order_sql = if let Some(sort_col) = sort_by {
+            let order = sort_order.unwrap_or_else(|| "asc".to_string());
+            let order_dir = if order.to_lowercase() == "desc" {
+                "DESC"
+            } else {
+                "ASC"
+            };
+            format!(" ORDER BY \"{}\" {}", sort_col, order_dir)
+        } else {
+            String::new()
+        };
+
+        // 带过滤条件的总数查询
+        let count_sql = format!("SELECT COUNT(*) FROM {}{}", safe_table, where_sql);
+        let count: i64 = sqlx::query(&count_sql)
             .fetch_one(self)
             .await
             .map_err(|e| e.to_string())?
             .get(0);
 
-        let rows = sqlx::query(&format!(
-            "SELECT * FROM {} LIMIT {} OFFSET {}",
-            safe_table, page_size, offset
-        ))
-        .fetch_all(self)
-        .await
-        .map_err(|e| e.to_string())?;
+        // 主查询（带过滤、排序、分页）
+        let query_sql = format!(
+            "SELECT * FROM {}{}{} LIMIT {} OFFSET {}",
+            safe_table, where_sql, order_sql, page_size, offset
+        );
+        let rows = sqlx::query(&query_sql)
+            .fetch_all(self)
+            .await
+            .map_err(|e| e.to_string())?;
 
         if rows.is_empty() {
             return Ok(QueryResult {
@@ -239,8 +296,21 @@ impl DbOps for PgPool {
         let col_names: Vec<String> = column_values.keys().cloned().collect();
         for (i, col) in col_names.iter().enumerate() {
             let placeholder = match column_types.get(col).map(|s| s.as_str()) {
-                Some(t) if !matches!(t.to_uppercase().as_str(), "TEXT" | "VARCHAR" | "CHAR" | "BPCHAR" | "NAME" | "CHARACTER"
-                    | "JSON" | "JSONB") => format!("${}::{}", i + 1, t),
+                Some(t)
+                    if !matches!(
+                        t.to_uppercase().as_str(),
+                        "TEXT"
+                            | "VARCHAR"
+                            | "CHAR"
+                            | "BPCHAR"
+                            | "NAME"
+                            | "CHARACTER"
+                            | "JSON"
+                            | "JSONB"
+                    ) =>
+                {
+                    format!("${}::{}", i + 1, t)
+                }
                 _ => format!("${}", i + 1),
             };
             set_parts.push(format!("\"{}\" = {}", col, placeholder));
@@ -249,7 +319,9 @@ impl DbOps for PgPool {
 
         let sql = format!(
             "UPDATE {} SET {} WHERE {}",
-            safe_table, set_parts.join(", "), where_clause
+            safe_table,
+            set_parts.join(", "),
+            where_clause
         );
 
         // 使用 PgArguments 手动构建参数，避免 Query::bind 所有权问题
@@ -274,10 +346,21 @@ impl DbOps for PgPool {
         Ok(result.rows_affected())
     }
 
-    async fn delete_row(&self, _database: &str, table: &str, primary_key: &str, primary_key_type: &str, primary_key_value: serde_json::Value) -> Result<u64, String> {
+    async fn delete_row(
+        &self,
+        _database: &str,
+        table: &str,
+        primary_key: &str,
+        primary_key_type: &str,
+        primary_key_value: serde_json::Value,
+    ) -> Result<u64, String> {
         let safe_table = pg_safe_table_ref(table);
         let sql = format!("DELETE FROM {} WHERE \"{}\" = $1", safe_table, primary_key);
-        log::info!("Executing SQL: {} with PK value: {}", sql, primary_key_value);
+        log::info!(
+            "Executing SQL: {} with PK value: {}",
+            sql,
+            primary_key_value
+        );
         let mut args = sqlx::postgres::PgArguments::default();
         bind_json_value_to_pg_args(&mut args, &primary_key_value, primary_key_type.into());
         let result = sqlx::query_with(&sql, args)
@@ -287,25 +370,54 @@ impl DbOps for PgPool {
         Ok(result.rows_affected())
     }
 
-    async fn insert_row(&self, _database: &str, table: &str, column_values: std::collections::HashMap<String, serde_json::Value>, column_types: std::collections::HashMap<String, String>) -> Result<u64, String> {
+    async fn insert_row(
+        &self,
+        _database: &str,
+        table: &str,
+        column_values: std::collections::HashMap<String, serde_json::Value>,
+        column_types: std::collections::HashMap<String, String>,
+    ) -> Result<u64, String> {
         if column_values.is_empty() {
             return Err("插入数据不能为空".into());
         }
         let col_names: Vec<String> = column_values.keys().cloned().collect();
         // 根据列类型决定占位符格式：
         // - 非字符串类型需要 $N::type 显式转换（PG 二进制协议不接受 text→bigint 等隐式转换）
-        let placeholders: Vec<String> = (1..=col_names.len()).map(|n| {
-            match col_names.get(n-1).and_then(|c| column_types.get(c)).map(|s| s.as_str()) {
-                Some(t) if !matches!(t.to_uppercase().as_str(), "TEXT" | "VARCHAR" | "CHAR" | "BPCHAR" | "NAME" | "CHARACTER"
-                    | "JSON" | "JSONB") => format!("${}::{}", n, t),
-                _ => format!("${}", n),
-            }
-        }).collect();
+        let placeholders: Vec<String> = (1..=col_names.len())
+            .map(|n| {
+                match col_names
+                    .get(n - 1)
+                    .and_then(|c| column_types.get(c))
+                    .map(|s| s.as_str())
+                {
+                    Some(t)
+                        if !matches!(
+                            t.to_uppercase().as_str(),
+                            "TEXT"
+                                | "VARCHAR"
+                                | "CHAR"
+                                | "BPCHAR"
+                                | "NAME"
+                                | "CHARACTER"
+                                | "JSON"
+                                | "JSONB"
+                        ) =>
+                    {
+                        format!("${}::{}", n, t)
+                    }
+                    _ => format!("${}", n),
+                }
+            })
+            .collect();
         let safe_table = pg_safe_table_ref(table);
         let sql = format!(
             "INSERT INTO {} ({}) VALUES ({})",
             safe_table,
-            col_names.iter().map(|c| format!("\"{}\"", c)).collect::<Vec<_>>().join(", "),
+            col_names
+                .iter()
+                .map(|c| format!("\"{}\"", c))
+                .collect::<Vec<_>>()
+                .join(", "),
             placeholders.join(", ")
         );
         let mut args = sqlx::postgres::PgArguments::default();
@@ -380,9 +492,12 @@ fn pg_rows_to_json(rows: &[sqlx::postgres::PgRow]) -> Vec<Vec<serde_json::Value>
                             .unwrap_or(serde_json::Value::Null)
 
                     // ── 字符串（各种 char/varchar/text 变体）─────────
-                    } else if tname == "TEXT" || tname == "VARCHAR"
-                        || tname == "CHAR" || tname == "BPCHAR"
-                        || tname == "NAME" || tname == "CHARACTER"
+                    } else if tname == "TEXT"
+                        || tname == "VARCHAR"
+                        || tname == "CHAR"
+                        || tname == "BPCHAR"
+                        || tname == "NAME"
+                        || tname == "CHARACTER"
                     {
                         row.try_get::<String, _>(i)
                             .map(|v| serde_json::json!(v))
@@ -408,10 +523,11 @@ fn pg_rows_to_json(rows: &[sqlx::postgres::PgRow]) -> Vec<Vec<serde_json::Value>
                             .unwrap_or(fallback_type(&tname))
                     } else if tname == "TIMESTAMPTZ" || tname == "TIMESTAMP WITH TIME ZONE" {
                         row.try_get::<chrono::DateTime<chrono::Utc>, _>(i)
-                            .map(|v| serde_json::json!(v.to_rfc3339_opts(
-                                chrono::SecondsFormat::Secs,
-                                false,
-                            )))
+                            .map(|v| {
+                                serde_json::json!(
+                                    v.to_rfc3339_opts(chrono::SecondsFormat::Secs, false,)
+                                )
+                            })
                             .unwrap_or(fallback_type(&tname))
 
                     // ── 二进制 ─────────────────────────────────────
@@ -466,10 +582,16 @@ fn fallback_type(type_name: &str) -> serde_json::Value {
 
 /// 将 JSON 值绑定到 PgArguments（避免 Query::bind 消耗所有权的问题）
 /// col_type: 目标列的 PG 类型名（如 "int8", "bigint", "timestamp"），用于决定绑定方式
-fn bind_json_value_to_pg_args(args: &mut sqlx::postgres::PgArguments, val: &serde_json::Value, col_type: Option<&str>) {
+fn bind_json_value_to_pg_args(
+    args: &mut sqlx::postgres::PgArguments,
+    val: &serde_json::Value,
+    col_type: Option<&str>,
+) {
     use sqlx::Arguments;
     match val {
-        serde_json::Value::Null => { let _ = args.add(None::<String>); }
+        serde_json::Value::Null => {
+            let _ = args.add(None::<String>);
+        }
         serde_json::Value::Number(n) => {
             // 根据目标列类型选择正确的数值绑定
             if n.is_f64() {
@@ -493,24 +615,33 @@ fn bind_json_value_to_pg_args(args: &mut sqlx::postgres::PgArguments, val: &serd
                 Some("SMALLINT") | Some("INT2") if s.parse::<i16>().is_ok() => {
                     let _ = args.add(s.parse::<i16>().unwrap());
                 }
-                Some("DOUBLE PRECISION") | Some("FLOAT8") | Some("FLOAT") if s.parse::<f64>().is_ok() => {
+                Some("DOUBLE PRECISION") | Some("FLOAT8") | Some("FLOAT")
+                    if s.parse::<f64>().is_ok() =>
+                {
                     let _ = args.add(s.parse::<f64>().unwrap());
                 }
                 Some("REAL") | Some("FLOAT4") if s.parse::<f32>().is_ok() => {
                     let _ = args.add(s.parse::<f32>().unwrap());
                 }
-                Some("BOOLEAN") | Some("BOOL") if s.eq_ignore_ascii_case("true")
-                    || s.eq_ignore_ascii_case("false") || s == "1" || s == "0" => {
+                Some("BOOLEAN") | Some("BOOL")
+                    if s.eq_ignore_ascii_case("true")
+                        || s.eq_ignore_ascii_case("false")
+                        || s == "1"
+                        || s == "0" =>
+                {
                     let _ = args.add(s.eq_ignore_ascii_case("true") || s == "1");
                 }
                 // 日期/时间/JSON 等复杂类型：绑 String（由 ::type 强转兜底）
-                _ => { let _ = args.add(s.clone()); }
+                _ => {
+                    let _ = args.add(s.clone());
+                }
             }
         }
-        serde_json::Value::Bool(b) => { let _ = args.add(*b); }
+        serde_json::Value::Bool(b) => {
+            let _ = args.add(*b);
+        }
         serde_json::Value::Array(_) | serde_json::Value::Object(_) => {
             let _ = args.add(val.to_string());
         }
     }
 }
-

@@ -48,8 +48,8 @@ export const databaseApi = {
     invoke<TableInfo[]>('list_tables', { connectionId, database, schema }),
   listColumns: (connectionId: string, database: string, table: string) =>
     invoke<ColumnInfo[]>('list_columns', { connectionId, database, table }),
-  getTableData: (connectionId: string, database: string, table: string, page: number, pageSize: number) =>
-    invoke<TableDataResult>('get_table_data', { connectionId, database, table, page, pageSize }),
+  getTableData: (connectionId: string, database: string, table: string, page: number, pageSize: number, sortBy?: string | null, sortOrder?: string | null, filters?: Record<string, string> | null) =>
+    invoke<TableDataResult>('get_table_data', { connectionId, database, table, page, pageSize, sortBy, sortOrder, filters }),
   getRowCount: (connectionId: string, database: string, table: string) =>
     invoke<number>('get_table_row_count', { connectionId, database, table }),
   /** 更新表格数据（批量更新多行） */

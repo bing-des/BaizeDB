@@ -1,9 +1,10 @@
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback, useRef, useEffect } from 'react';
 import CodeMirror from '@uiw/react-codemirror';
 import { sql, MySQL, PostgreSQL } from '@codemirror/lang-sql';
 import { oneDark } from '@codemirror/theme-one-dark';
 import { EditorView } from '@codemirror/view';
-import { Play, Loader2, Download, Copy, CheckCircle, ChevronDown, Square, Maximize2 } from 'lucide-react';
+import { Play, Loader2, Download, Copy, CheckCircle, ChevronDown, Square, Maximize2, AlignLeft } from 'lucide-react';
+import { format } from 'sql-formatter';
 import { useThemeStore, useConnectionStore } from '../../store';
 import { queryApi } from '../../utils/api';
 import { parseSql, getSqlStatementsFromSelection, getSqlStatementsFromCurrentLine } from '../../utils/sqlParser';
@@ -22,6 +23,11 @@ const lightTheme = EditorView.theme({
 export default function QueryEditor({ tab }: { tab: Tab }) {
   const [code, setCode] = useState(tab.content ?? '');
   const [results, setResults] = useState<QueryResult[]>([]);
+  
+  // 监听 tab.content 变化，切换标签时更新编辑器内容
+  useEffect(() => {
+    setCode(tab.content ?? '');
+  }, [tab.id, tab.content]);
   const [activeResultIndex, setActiveResultIndex] = useState(0);
   const [running, setRunning] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -166,15 +172,49 @@ export default function QueryEditor({ tab }: { tab: Tab }) {
     a.click();
   };
 
+  // SQL 格式化
+  const handleFormat = useCallback(() => {
+    try {
+      const formatted = format(code, {
+        language: conn?.db_type === 'postgresql' ? 'postgresql' : 'mysql',
+        keywordCase: 'upper',
+        indentStyle: 'standard',
+      });
+      setCode(formatted);
+      // 更新编辑器内容
+      if (editorViewRef.current) {
+        const view = editorViewRef.current;
+        view.dispatch({
+          changes: { from: 0, to: view.state.doc.length, insert: formatted }
+        });
+      }
+    } catch (e) {
+      console.error('SQL 格式化失败:', e);
+    }
+  }, [code, conn?.db_type]);
+
   const hasData = results.length > 0 && !results[activeResultIndex]?.error && results[activeResultIndex]?.columns.length > 0;
 
+  // 键盘快捷键监听
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Ctrl+Enter 运行
+      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+        e.preventDefault();
+        handleRun();
+      }
+      // Shift+Alt+F 格式化
+      if (e.shiftKey && e.altKey && e.key.toLowerCase() === 'f') {
+        e.preventDefault();
+        handleFormat();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [handleRun, handleFormat]);
+
   return (
-    <div
-      className="h-full flex flex-col"
-      onKeyDown={(e) => {
-        if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); handleRun(); }
-      }}
-    >
+    <div className="h-full flex flex-col">
       {/* Toolbar */}
       <div className="flex items-center gap-2 px-3 py-2 border-b border-[var(--border)] bg-[var(--bg-secondary)] flex-shrink-0">
         {/* 运行下拉菜单 - 优质样式 */}
@@ -247,6 +287,16 @@ export default function QueryEditor({ tab }: { tab: Tab }) {
         {showRunOptions && (
           <div className="fixed inset-0 z-30" onClick={() => setShowRunOptions(false)} />
         )}
+
+        {/* 格式化按钮 */}
+        <button
+          className="btn-ghost py-1 text-xs flex items-center gap-1"
+          onClick={handleFormat}
+          title="格式化 SQL (Shift+Alt+F)"
+        >
+          <AlignLeft size={12} />
+          格式化
+        </button>
 
         <div className="h-4 w-px bg-[var(--border)]" />
 

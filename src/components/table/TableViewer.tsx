@@ -24,6 +24,12 @@ export default function TableViewer({ tab }: { tab: Tab }) {
   const [loading, setLoading] = useState(false);
   const [panel, setPanel] = useState<'data' | 'columns'>('data');
 
+  // 排序状态
+  const [sortColumn, setSortColumn] = useState<number | null>(null);
+  const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc');
+  // 过滤状态（列名 -> 过滤文本）- 保留兼容性
+  const [filterValues, setFilterValues] = useState<Record<string, string>>({});
+
   // 编辑状态
   const [changes, setChanges] = useState<CellChange[]>([]);
   const [saving, setSaving] = useState(false);
@@ -48,12 +54,38 @@ export default function TableViewer({ tab }: { tab: Tab }) {
   const pkColumn = columns[primaryKeyColIndex] ?? 'id';
   const pkColumnType = columnTypes[primaryKeyColIndex] ?? null;
 
+  // 过滤操作符类型（前端选择）
+  type FilterOp = '=' | '!=' | '>' | '<' | '>=' | '<=' | 'LIKE' | 'NOT LIKE' | 'IS NULL' | 'IS NOT NULL';
+  
+  interface FilterCondition {
+    column: string;
+    op: FilterOp;
+    value: string;
+  }
+  
+  const [filterConditions, setFilterConditions] = useState<Record<string, FilterCondition>>({});
+  
+  // 构建过滤参数（发送到后端）
+  const buildFilters = useCallback(() => {
+    const result: Record<string, string> = {};
+    for (const [col, cond] of Object.entries(filterConditions)) {
+      if (cond.value || cond.op === 'IS NULL' || cond.op === 'IS NOT NULL') {
+        result[col] = `${cond.op}|${cond.value}`;
+      }
+    }
+    return Object.keys(result).length > 0 ? result : null;
+  }, [filterConditions]);
+  
   const loadData = useCallback(async (p: number, size: number = pageSize) => {
     if (!database || !table) return;
     setLoading(true);
     try {
-      console.log(`[TableViewer] loadData connectionId=${connectionId} database=${database} table=${table} page=${p} size=${size}`);
-      const r = await databaseApi.getTableData(connectionId, database, table, p, size);
+      const sortBy = sortColumn !== null ? columns[sortColumn] : null;
+      const sortOrder = sortDirection;
+      const filters = buildFilters();
+      
+      console.log(`[TableViewer] loadData connectionId=${connectionId} database=${database} table=${table} page=${p} size=${size}`, { sortBy, sortOrder, filters });
+      const r = await databaseApi.getTableData(connectionId, database, table, p, size, sortBy, sortOrder, filters);
       console.log(`[TableViewer] loaded columns=${r.columns.length} rows=${r.rows.length} total=${r.total}`);
       setColumns(r.columns);
       setColumnTypes(r.column_types || []);
@@ -67,7 +99,7 @@ export default function TableViewer({ tab }: { tab: Tab }) {
     } finally {
       setLoading(false);
     }
-  }, [connectionId, database, table, pageSize]);
+  }, [connectionId, database, table, pageSize, sortColumn, sortDirection, columns, buildFilters]);
 
   useEffect(() => {
     loadData(1);
@@ -81,6 +113,123 @@ export default function TableViewer({ tab }: { tab: Tab }) {
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
 
   const go = (p: number) => { setPage(p); loadData(p); };
+
+  // 切换排序：asc -> desc -> cancel，实时生效
+  const toggleSort = (colIndex: number) => {
+    let newSortColumn: number | null = sortColumn;
+    let newSortDirection: 'asc' | 'desc' = sortDirection;
+    
+    if (sortColumn === colIndex) {
+      if (sortDirection === 'asc') {
+        newSortDirection = 'desc';
+      } else {
+        // 取消排序
+        newSortColumn = null;
+        newSortDirection = 'asc';
+      }
+    } else {
+      newSortColumn = colIndex;
+      newSortDirection = 'asc';
+    }
+    
+    // 先更新状态
+    setSortColumn(newSortColumn);
+    setSortDirection(newSortDirection);
+    setPage(1);
+    
+    // 立即加载数据（使用新值）
+    if (database && table) {
+      setLoading(true);
+      databaseApi.getTableData(
+        connectionId,
+        database,
+        table,
+        1,
+        pageSize,
+        newSortColumn !== null ? columns[newSortColumn] : undefined,
+        newSortDirection,
+        buildFilters()
+      ).then((r) => {
+        setColumns(r.columns);
+        setColumnTypes(r.column_types || []);
+        setRows(r.rows);
+        setTotal(r.total);
+        setChanges([]);
+        changesRef.current = [];
+        setSelectedRowIndices(new Set());
+      }).catch((e) => {
+        console.error(`[TableViewer] loadData error:`, e);
+      }).finally(() => {
+        setLoading(false);
+      });
+    }
+  };
+  
+  // 应用排序和过滤
+  const applyFilters = () => { loadData(1); };
+
+  // 重置所有过滤
+  const resetFilters = () => {
+    setFilterConditions({});
+    setSortColumn(null);
+    setSortDirection('asc');
+    setPage(1);
+    loadData(1);
+  };
+
+  // 处理过滤条件变更并立即应用（同步执行）
+  const handleFilterChange = (column: string, condition: { column: string; op: FilterOp; value: string } | null) => {
+    // 计算新的过滤条件
+    let newConditions: Record<string, { column: string; op: FilterOp; value: string }>;
+    if (condition === null) {
+      newConditions = { ...filterConditions };
+      delete newConditions[column];
+    } else {
+      newConditions = { ...filterConditions, [column]: condition };
+    }
+    
+    // 同步更新状态
+    setFilterConditions(newConditions);
+    
+    // 立即使用新条件加载数据
+    if (database && table) {
+      setLoading(true);
+      setPage(1);
+      
+      // 构建 filters 对象
+      const filters: Record<string, string> = {};
+      Object.values(newConditions).forEach((cond) => {
+        if (cond.op === 'IS NULL' || cond.op === 'IS NOT NULL') {
+          filters[cond.column] = `${cond.op}|`;
+        } else {
+          filters[cond.column] = `${cond.op}|${cond.value}`;
+        }
+      });
+      
+      databaseApi.getTableData(
+        connectionId,
+        database,
+        table,
+        1,
+        pageSize,
+        sortColumn !== null ? columns[sortColumn] : undefined,
+        sortDirection,
+        Object.keys(filters).length > 0 ? filters : undefined
+      ).then((r) => {
+        setColumns(r.columns);
+        setColumnTypes(r.column_types || []);
+        setRows(r.rows);
+        setTotal(r.total);
+        setChanges([]);
+        changesRef.current = [];
+        setSelectedRowIndices(new Set());
+      }).catch((e) => {
+        console.error(`[TableViewer] loadData error:`, e);
+      }).finally(() => {
+        setLoading(false);
+      });
+    }
+  };
 
   const exportCSV = () => {
     const lines = [columns.join(','), ...rows.map((r) => r.map((v) => v === null ? '' : `"${String(v).replace(/"/g, '""')}"`).join(','))];
@@ -425,6 +574,12 @@ export default function TableViewer({ tab }: { tab: Tab }) {
                 onRowSelect={handleRowSelect}
                 onEdit={handleContextMenuEdit}
                 onDelete={deleteRow}
+                sortColumn={sortColumn}
+                sortDirection={sortDirection}
+                onSort={toggleSort}
+                filterConditions={filterConditions}
+                onFilterChange={handleFilterChange}
+                onApplyFilters={applyFilters}
               />
               {/* 行内新增行区域 */}
               {insertingRow ? (

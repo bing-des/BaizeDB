@@ -1,6 +1,6 @@
 use sqlx::{MySqlPool, Row, Column, ValueRef, TypeInfo};
 use crate::database::db_ops::{
-    ColumnMeta, DatabaseMeta, DbOps, QueryResult, SchemaMeta, TableMeta,
+    ColumnMeta, DatabaseMeta, DbOps, QueryResult, SchemaMeta, TableMeta
 };
 
 impl DbOps for MySqlPool {
@@ -198,11 +198,12 @@ impl DbOps for MySqlPool {
         database: &str,
         table: &str,
         primary_key: &str,
+        primary_key_type: &str,
         primary_key_value: serde_json::Value,
         column_values: std::collections::HashMap<String, serde_json::Value>,
         _column_types: std::collections::HashMap<String, String>,
     ) -> Result<u64, String> {
-        update_row_impl(self, database, table, primary_key, primary_key_value, column_values).await
+        update_row_impl(self, database, table, primary_key, primary_key_type, primary_key_value, column_values).await
     }
 
     async fn delete_row(&self, database: &str, table: &str, primary_key: &str, _primary_key_type: &str, primary_key_value: serde_json::Value) -> Result<u64, String> {
@@ -311,6 +312,7 @@ async fn update_row_impl(
     _database: &str,
     table: &str,
     primary_key: &str,
+    _primary_key_type: &str,
     primary_key_value: serde_json::Value,
     column_values: std::collections::HashMap<String, serde_json::Value>,
 ) -> Result<u64, String> {

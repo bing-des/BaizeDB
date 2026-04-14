@@ -250,7 +250,7 @@ export default function TableViewer({ tab }: { tab: Tab }) {
       }));
 
       console.log(`[TableViewer] saveChanges: sending ${updates.length} row updates`);
-      const affected = await databaseApi.updateTableData(connectionId, database, table, pkColumn, updates);
+      const affected = await databaseApi.updateTableData(connectionId, database, table, pkColumn, pkColumnType, updates);
       console.log(`[TableViewer] saveChanges: ${affected} rows affected`);
       changesRef.current = [];
       setChanges([]);

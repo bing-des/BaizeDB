@@ -53,8 +53,8 @@ export const databaseApi = {
   getRowCount: (connectionId: string, database: string, table: string) =>
     invoke<number>('get_table_row_count', { connectionId, database, table }),
   /** 更新表格数据（批量更新多行） */
-  updateTableData: (connectionId: string, database: string, table: string, primaryKey: string, updates: Array<{ row_index: number; primary_key_value: any; column_values: Record<string, any>; column_types: Record<string, string> }>) =>
-    invoke<number>('update_table_data', { connectionId, database, table, primaryKey, updates }),
+  updateTableData: (connectionId: string, database: string, table: string, primaryKey: string, primaryKeyType: string, updates: Array<{ row_index: number; primary_key_value: any; column_values: Record<string, any>; column_types: Record<string, string> }>) =>
+    invoke<number>('update_table_data', { connectionId, database, table, primaryKey, primaryKeyType, updates }),
   /** 删除表格数据（根据主键删除多行） */
   deleteTableData: (connectionId: string, database: string, table: string, primaryKey: string, primaryKeyType: string, primaryKeyValues: Array<any>) =>
     invoke<number>('delete_table_data', { connectionId, database, table, primaryKey, primaryKeyType, primaryKeyValues }),

@@ -28,8 +28,8 @@ impl DbOps for Arc<MySqlPool> {
     async fn execute_sql(&self, sql: &str) -> Result<u64, String> {
         DbOps::execute_sql(self.as_ref(), sql).await
     }
-    async fn update_row(&self, database: &str, table: &str, primary_key: &str, primary_key_value: serde_json::Value, column_values: std::collections::HashMap<String, serde_json::Value>, column_types: std::collections::HashMap<String, String>) -> Result<u64, String> {
-        DbOps::update_row(self.as_ref(), database, table, primary_key, primary_key_value, column_values, column_types).await
+    async fn update_row(&self, database: &str, table: &str, primary_key: &str, primary_key_type: &str, primary_key_value: serde_json::Value, column_values: std::collections::HashMap<String, serde_json::Value>, column_types: std::collections::HashMap<String, String>) -> Result<u64, String> {
+        DbOps::update_row(self.as_ref(), database, table, primary_key, primary_key_type, primary_key_value, column_values, column_types).await
     }
     async fn delete_row(&self, database: &str, table: &str, primary_key: &str, primary_key_type: &str, primary_key_value: serde_json::Value) -> Result<u64, String> {
         DbOps::delete_row(self.as_ref(), database, table, primary_key, primary_key_type, primary_key_value).await
@@ -64,8 +64,8 @@ impl DbOps for Arc<PgPool> {
     async fn execute_sql(&self, sql: &str) -> Result<u64, String> {
         DbOps::execute_sql(self.as_ref(), sql).await
     }
-    async fn update_row(&self, database: &str, table: &str, primary_key: &str, primary_key_value: serde_json::Value, column_values: std::collections::HashMap<String, serde_json::Value>, column_types: std::collections::HashMap<String, String>) -> Result<u64, String> {
-        DbOps::update_row(self.as_ref(), database, table, primary_key, primary_key_value, column_values, column_types).await
+    async fn update_row(&self, database: &str, table: &str, primary_key: &str, primary_key_type: &str, primary_key_value: serde_json::Value, column_values: std::collections::HashMap<String, serde_json::Value>, column_types: std::collections::HashMap<String, String>) -> Result<u64, String> {
+        DbOps::update_row(self.as_ref(), database, table, primary_key, primary_key_type, primary_key_value, column_values, column_types).await
     }
     async fn delete_row(&self, database: &str, table: &str, primary_key: &str, primary_key_type: &str, primary_key_value: serde_json::Value) -> Result<u64, String> {
         DbOps::delete_row(self.as_ref(), database, table, primary_key, primary_key_type, primary_key_value).await
@@ -138,10 +138,10 @@ impl AnyDbPool {
         }
     }
 
-    pub async fn update_row(&self, database: &str, table: &str, primary_key: &str, primary_key_value: serde_json::Value, column_values: std::collections::HashMap<String, serde_json::Value>, column_types: std::collections::HashMap<String, String>) -> Result<u64, String> {
+    pub async fn update_row(&self, database: &str, table: &str, primary_key: &str, primary_key_type: &str, primary_key_value: serde_json::Value, column_values: std::collections::HashMap<String, serde_json::Value>, column_types: std::collections::HashMap<String, String>) -> Result<u64, String> {
         match self {
-            AnyDbPool::MySQL(p) => p.update_row(database, table, primary_key, primary_key_value, column_values, column_types).await,
-            AnyDbPool::PG(p) => p.update_row(database, table, primary_key, primary_key_value, column_values, column_types).await,
+            AnyDbPool::MySQL(p) => p.update_row(database, table, primary_key, primary_key_type, primary_key_value, column_values, column_types).await,
+            AnyDbPool::PG(p) => p.update_row(database, table, primary_key, primary_key_type, primary_key_value, column_values, column_types).await,
         }
     }
 

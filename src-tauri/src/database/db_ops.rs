@@ -110,6 +110,7 @@ pub trait DbOps: Send + Sync {
         database: &str,
         table: &str,
         primary_key: &str,
+        primary_key_type: &str,
         primary_key_value: serde_json::Value,
         column_values: std::collections::HashMap<String, serde_json::Value>,
         column_types: std::collections::HashMap<String, String>,

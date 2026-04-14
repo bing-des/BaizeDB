@@ -1,6 +1,6 @@
 use sqlx::{PgPool, Row, Column, ValueRef, TypeInfo};
 use crate::database::db_ops::{
-    ColumnMeta, DatabaseMeta, DbOps, QueryResult, SchemaMeta, TableMeta,
+    ColumnMeta, DatabaseMeta, DbOps, QueryResult, SchemaMeta, TableMeta
 };
 
 impl DbOps for PgPool {
@@ -221,6 +221,7 @@ impl DbOps for PgPool {
         _database: &str,
         table: &str,
         primary_key: &str,
+        primary_key_type: &str,
         primary_key_value: serde_json::Value,
         column_values: std::collections::HashMap<String, serde_json::Value>,
         column_types: std::collections::HashMap<String, String>,
@@ -261,7 +262,7 @@ impl DbOps for PgPool {
         }
 
         // 绑定 WHERE 主键值
-        bind_json_value_to_pg_args(&mut args, &primary_key_value, None);
+        bind_json_value_to_pg_args(&mut args, &primary_key_value, primary_key_type.into());
 
         let query = sqlx::query_with(&sql, args);
 

@@ -1,6 +1,5 @@
 use tauri::State;
-use serde::Serialize;
-
+use serde::{Serialize};
 use crate::state::AppState;
 
 // ====== 前端兼容的旧结构体（保持 API 不变）======
@@ -188,6 +187,7 @@ pub async fn update_table_data(
     database: String,
     table: String,
     primary_key: String,
+    primary_key_type: String,
     updates: Vec<RowUpdate>,
     state: State<'_, AppState>,
 ) -> std::result::Result<u64, String> {
@@ -201,7 +201,7 @@ pub async fn update_table_data(
 
     for update in updates {
         let affected = db_ops
-            .update_row(&database, &table, &primary_key, update.primary_key_value, update.column_values, update.column_types)
+            .update_row(&database, &table, &primary_key, &primary_key_type, update.primary_key_value, update.column_values, update.column_types)
             .await?;
         total_affected += affected;
     }

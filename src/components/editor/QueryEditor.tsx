@@ -5,7 +5,7 @@ import { oneDark } from '@codemirror/theme-one-dark';
 import { EditorView } from '@codemirror/view';
 import { Play, Loader2, Download, Copy, CheckCircle, ChevronDown, Square, Maximize2, AlignLeft } from 'lucide-react';
 import { format } from 'sql-formatter';
-import { useThemeStore, useConnectionStore } from '../../store';
+import { useThemeStore, useConnectionStore, useTabStore } from '../../store';
 import { queryApi } from '../../utils/api';
 import { parseSql, getSqlStatementsFromSelection, getSqlStatementsFromCurrentLine } from '../../utils/sqlParser';
 import type { Tab, QueryResult } from '../../types';
@@ -21,13 +21,21 @@ const lightTheme = EditorView.theme({
 });
 
 export default function QueryEditor({ tab }: { tab: Tab }) {
+  const { updateTabContent, updateTabResults } = useTabStore();
   const [code, setCode] = useState(tab.content ?? '');
-  const [results, setResults] = useState<QueryResult[]>([]);
+  const [results, setResultsState] = useState<QueryResult[]>(tab.results ?? []);
   
-  // 监听 tab.content 变化，切换标签时更新编辑器内容
+  // 包装 setResults，同时保存到 store
+  const setResults = useCallback((newResults: QueryResult[]) => {
+    setResultsState(newResults);
+    updateTabResults(tab.id, newResults);
+  }, [tab.id, updateTabResults]);
+  
+  // 监听 tab 变化，切换标签时恢复内容和结果
   useEffect(() => {
     setCode(tab.content ?? '');
-  }, [tab.id, tab.content]);
+    setResultsState(tab.results ?? []);
+  }, [tab.id]);
   const [activeResultIndex, setActiveResultIndex] = useState(0);
   const [running, setRunning] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -198,10 +206,53 @@ export default function QueryEditor({ tab }: { tab: Tab }) {
   // 键盘快捷键监听
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Ctrl+Enter 运行
+      // Ctrl+Enter 运行 - 使用最新的 code 状态
       if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
         e.preventDefault();
-        handleRun();
+        // 直接从 ref 获取最新内容，避免闭包问题
+        const currentCode = editorViewRef.current?.state.doc.toString() || code;
+        const statements = parseSql(currentCode);
+        if (statements.length > 0) {
+          // 直接执行，不走 handleRun 避免依赖问题
+          setRunning(true);
+          setResults([]);
+          setActiveResultIndex(0);
+          
+          const allResults: QueryResult[] = [];
+          let totalExecutionTime = 0;
+          
+          (async () => {
+            try {
+              for (let i = 0; i < statements.length; i++) {
+                const statement = statements[i];
+                if (!statement.trim()) continue;
+                try {
+                  const res = await queryApi.execute(tab.connectionId, statement, tab.database);
+                  totalExecutionTime += res.execution_time_ms || 0;
+                  allResults.push(res);
+                  if (res.error) {
+                    setResults([...allResults]);
+                    setRunning(false);
+                    return;
+                  }
+                } catch (e) {
+                  allResults.push({
+                    columns: [],
+                    rows: [],
+                    execution_time_ms: totalExecutionTime,
+                    error: `语句 ${i + 1}/${statements.length} 执行失败: ${e}`
+                  });
+                  setResults([...allResults]);
+                  setRunning(false);
+                  return;
+                }
+              }
+              setResults(allResults);
+            } finally {
+              setRunning(false);
+            }
+          })();
+        }
       }
       // Shift+Alt+F 格式化
       if (e.shiftKey && e.altKey && e.key.toLowerCase() === 'f') {
@@ -211,7 +262,7 @@ export default function QueryEditor({ tab }: { tab: Tab }) {
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [handleRun, handleFormat]);
+  }, [code, tab.connectionId, tab.database, handleFormat]);
 
   return (
     <div className="h-full flex flex-col">
@@ -316,6 +367,21 @@ export default function QueryEditor({ tab }: { tab: Tab }) {
 
         <div className="flex-1" />
 
+        {/* 快捷键说明 */}
+        <div className="flex items-center gap-3 text-[10px] text-[var(--text-muted)] mr-2">
+          <span className="flex items-center gap-1">
+            <kbd className="px-1 py-0.5 bg-[var(--bg-tertiary)] border border-[var(--border)] rounded text-[9px]">Ctrl</kbd>
+            <kbd className="px-1 py-0.5 bg-[var(--bg-tertiary)] border border-[var(--border)] rounded text-[9px]">Enter</kbd>
+            <span>运行</span>
+          </span>
+          <span className="flex items-center gap-1">
+            <kbd className="px-1 py-0.5 bg-[var(--bg-tertiary)] border border-[var(--border)] rounded text-[9px]">Shift</kbd>
+            <kbd className="px-1 py-0.5 bg-[var(--bg-tertiary)] border border-[var(--border)] rounded text-[9px]">Alt</kbd>
+            <kbd className="px-1 py-0.5 bg-[var(--bg-tertiary)] border border-[var(--border)] rounded text-[9px]">F</kbd>
+            <span>格式化</span>
+          </span>
+        </div>
+
         {results.length > 0 && (
           <div className="flex items-center gap-2">
             {hasData && (
@@ -362,7 +428,11 @@ export default function QueryEditor({ tab }: { tab: Tab }) {
       <div className={`overflow-hidden ${results.length > 0 ? 'flex-none' : 'flex-1'}`} style={{ height: results.length > 0 ? '55%' : '100%' }}>
         <CodeMirror
           value={code}
-          onChange={setCode}
+          onChange={(newCode) => {
+            setCode(newCode);
+            // 保存到 store，切换标签时不会丢失
+            updateTabContent(tab.id, newCode);
+          }}
           extensions={[sql({ dialect })]}
           theme={isDark ? oneDark : lightTheme}
           height="100%"
@@ -473,7 +543,7 @@ export default function QueryEditor({ tab }: { tab: Tab }) {
                   执行成功，影响 {result.affected_rows} 行
                 </div>
               ) : (
-                <ResultTable columns={result.columns} rows={result.rows} />
+                <ResultTable columns={result.columns} rows={result.rows} showFilter={false} />
               );
             })()}
           </div>

@@ -61,6 +61,12 @@ export const databaseApi = {
   /** 插入一行新数据到表格 */
   insertTableData: (connectionId: string, database: string, table: string, columnValues: Record<string, any>, columnTypes?: Record<string, string>) =>
     invoke<number>('insert_table_data', { connectionId, database, table, columnValues, columnTypes }),
+  /** 删除数据库（DROP DATABASE） */
+  dropDatabase: (connectionId: string, databaseName: string) =>
+    invoke<u64>('drop_database', { connectionId, databaseName }),
+  /** 删除表（DROP TABLE） */
+  dropTable: (connectionId: string, database: string, table: string, schema?: string) =>
+    invoke<u64>('drop_table', { connectionId, database, table, schema }),
 };
 
 export const redisApi = {

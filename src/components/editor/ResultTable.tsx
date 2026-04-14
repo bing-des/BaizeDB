@@ -43,6 +43,8 @@ interface Props {
   onFilterChange?: (column: string, condition: FilterCondition | null) => void;
   /** 应用过滤回调 */
   onApplyFilters?: () => void;
+  /** 是否显示表头筛选漏斗（SQL查询结果中隐藏） */
+  showFilter?: boolean;
 }
 
 export default function ResultTable({
@@ -63,6 +65,7 @@ export default function ResultTable({
   filterConditions = {},
   onFilterChange,
   onApplyFilters,
+  showFilter = true,
 }: Props) {
   // 编辑状态
   const [editingCell, setEditingCell] = useState<{ row: number; col: number } | null>(null);
@@ -295,7 +298,8 @@ export default function ResultTable({
                         </span>
                       )}
                     </div>
-                    {/* 漏斗图标 */}
+                    {/* 漏斗图标 - 仅 showFilter 时显示 */}
+                    {showFilter && (
                     <button
                       className={`p-0.5 rounded hover:bg-[var(--bg-secondary)] transition-colors ${
                         hasFilter ? 'text-yellow-400' : 'text-[var(--text-muted)] hover:text-[var(--text-secondary)]'
@@ -311,6 +315,7 @@ export default function ResultTable({
                     >
                       <Filter size={12} />
                     </button>
+                    )}
                   </div>
                 </th>
               );

@@ -332,6 +332,20 @@ impl DbOps for MySqlPool {
             .map_err(|e| format!("INSERT 失败: {}", e))?;
         Ok(result.rows_affected())
     }
+
+    fn is_postgres(&self) -> bool {
+        false
+    }
+
+    async fn drop_database(&self, database_name: &str) -> Result<u64, String> {
+        let sql = format!(r#"DROP DATABASE `{}`"#, database_name.replace('`', ""));
+        self.execute_sql(&sql).await
+    }
+
+    async fn drop_table(&self, _database: &str, table: &str, _schema: Option<&str>) -> Result<u64, String> {
+        let sql = format!(r#"DROP TABLE `{}`.`{}`"#, _database, table.replace('`', ""));
+        self.execute_sql(&sql).await
+    }
 }
 
 fn mysql_rows_to_json(rows: &[sqlx::mysql::MySqlRow]) -> Vec<Vec<serde_json::Value>> {

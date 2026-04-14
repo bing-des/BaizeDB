@@ -431,9 +431,28 @@ impl DbOps for PgPool {
             .map_err(|e| format!("INSERT 失败: {}", e))?;
         Ok(result.rows_affected())
     }
-}
 
-/// 将 "schema.table" 格式的表名拆分为 PG 安全引用: "schema"."table"
+    fn is_postgres(&self) -> bool {
+        true
+    }
+
+    async fn drop_database(&self, database_name: &str) -> Result<u64, String> {
+        // PG 不允许 DROP DATABASE 在有活跃连接时执行，需要用 template1 连接
+        // 这里直接执行，如果失败由调用方处理错误
+        let sql = format!(r#"DROP DATABASE "{}""#, database_name.replace('"', ""));
+        self.execute_sql(&sql).await
+    }
+
+    async fn drop_table(&self, _database: &str, table: &str, _schema: Option<&str>) -> Result<u64, String> {
+        let safe_table = if let Some(s) = _schema {
+            format!(r#""{}"."{}""#, s.replace('"', ""), table.replace('"', ""))
+        } else {
+            format!(r#""{}""#, table.replace('"', ""))
+        };
+        let sql = format!("DROP TABLE {}", safe_table);
+        self.execute_sql(&sql).await
+    }
+}
 /// 如果不含点号，则直接包裹为 "table"
 fn pg_safe_table_ref(table: &str) -> String {
     if let Some(dot_pos) = table.find('.') {

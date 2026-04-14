@@ -290,3 +290,51 @@ pub async fn insert_table_data(
         )
         .await
 }
+
+/// 删除数据库（DROP DATABASE）
+#[tauri::command]
+pub async fn drop_database(
+    connection_id: String,
+    database_name: String,
+    state: State<'_, AppState>,
+) -> std::result::Result<u64, String> {
+    let pool = {
+        let pools = state.pools.read().await;
+        pools.get(&connection_id).cloned().ok_or("连接未激活")?
+    };
+
+    // drop 需要在目标库之外执行，用主连接池即可
+    let db_ops = pool.as_db_ops(&state, &connection_id, "").await?;
+    // 安全检查：不允许删除系统库
+    let forbidden = ["mysql", "information_schema", "performance_schema", "postgres", "template0", "template1"];
+    if forbidden.contains(&database_name.as_str()) {
+        return Err(format!("不允许删除系统数据库: {}", database_name));
+    }
+    let sql = format!(r#"DROP DATABASE "{}""#, database_name.replace('"', ""));
+    db_ops.execute_sql(&sql).await
+}
+
+/// 删除表（DROP TABLE）
+#[tauri::command]
+pub async fn drop_table(
+    connection_id: String,
+    database: String,
+    table: String,
+    schema: Option<String>,
+    state: State<'_, AppState>,
+) -> std::result::Result<u64, String> {
+    let pool = {
+        let pools = state.pools.read().await;
+        pools.get(&connection_id).cloned().ok_or("连接未激活")?
+    };
+
+    let db_ops = pool.as_db_ops(&state, &connection_id, &database).await?;
+    let safe_table = table.replace('"', "");
+    let sql = if let Some(s) = schema {
+        let safe_schema = s.replace('"', "");
+        format!(r#"{0}."{1}"."{2}"#, if db_ops.is_postgres() { "" } else { "`" }, safe_schema, safe_table)
+    } else {
+        format!(r#"{0}{1}"#, if db_ops.is_postgres() { "\"" } else { "`" }, safe_table)
+    };
+    db_ops.execute_sql(&sql).await
+}

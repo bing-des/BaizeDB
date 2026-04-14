@@ -36,6 +36,8 @@ fn main() {
             commands::database::update_table_data,
             commands::database::delete_table_data,
             commands::database::insert_table_data,
+            commands::database::drop_database,
+            commands::database::drop_table,
             commands::query::execute_query,
             commands::query::execute_query_paged,
             commands::redis::redis_list_dbs,

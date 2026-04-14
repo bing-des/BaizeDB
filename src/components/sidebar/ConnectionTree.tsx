@@ -2,13 +2,14 @@ import { useState, useCallback } from 'react';
 import {
   ChevronRight, ChevronDown, Database, Table2,
   Loader2, PlugZap, TerminalSquare, Eye, Layers, Key,
-  RefreshCw, Plus, Unplug,
+  RefreshCw, Plus, Unplug, Trash2,
 } from 'lucide-react';
 import { v4 as uuidv4 } from 'uuid';
 import { useConnectionStore, useTabStore } from '../../store';
 import { connectionApi, databaseApi, redisApi } from '../../utils/api';
 import type { ConnectionConfig, TableInfo, RedisKeyInfo } from '../../types';
 import ContextMenu, { type MenuEntry } from '../common/ContextMenu';
+import ConfirmModal from '../common/ConfirmModal';
 
 interface SchemaNode {
   name: string;
@@ -57,6 +58,11 @@ export default function ConnectionTree() {
   const [tree, setTree] = useState<TreeState>({});
   const [connecting, setConnecting] = useState<string | null>(null);
   const [ctxMenu, setCtxMenu] = useState<ContextMenuState | null>(null);
+  const [confirmState, setConfirmState] = useState<{
+    message: string;
+    onConfirm: () => void;
+    danger: boolean;
+  } | null>(null);
 
   const updateConn = (id: string, fn: (n: ConnNode) => ConnNode) =>
     setTree((p) => ({ ...p, [id]: fn(p[id] ?? {}) }));
@@ -388,6 +394,13 @@ export default function ConnectionTree() {
         danger: true,
       });
     }
+    items.push({ separator: true });
+    items.push({
+      label: '删除连接',
+      icon: <Trash2 size={13} />,
+      onClick: () => handleDeleteConnection(conn),
+      danger: true,
+    });
     setCtxMenu({ x: e.clientX, y: e.clientY, items });
   }, [connectedIds, connections]);
 
@@ -404,6 +417,13 @@ export default function ConnectionTree() {
         label: '刷新',
         icon: <RefreshCw size={13} />,
         onClick: () => handleRefreshDb(conn, dbName),
+      },
+      { separator: true },
+      {
+        label: '删除数据库',
+        icon: <Trash2 size={13} />,
+        onClick: () => handleDeleteDatabase(conn, dbName),
+        danger: true,
       },
     ];
     setCtxMenu({ x: e.clientX, y: e.clientY, items });
@@ -427,7 +447,7 @@ export default function ConnectionTree() {
     setCtxMenu({ x: e.clientX, y: e.clientY, items });
   }, [connections]);
 
-  const showTableContextMenu = useCallback((e: React.MouseEvent, conn: ConnectionConfig, dbName: string, schemaName: string | undefined) => {
+  const showTableContextMenu = useCallback((e: React.MouseEvent, conn: ConnectionConfig, dbName: string, schemaName: string | undefined, tableName?: string) => {
     e.preventDefault();
     e.stopPropagation();
     const items: MenuEntry[] = [
@@ -441,6 +461,17 @@ export default function ConnectionTree() {
             handleRefreshDb(conn, dbName);
           }
         },
+      },
+      { separator: true },
+      {
+        label: '删除表',
+        icon: <Trash2 size={13} />,
+        onClick: () => {
+          // tableName 来自事件绑定时的闭包（见下面 onContextMenu 绑定）
+          const tbl = tableName ?? '';
+          if (tbl) handleDeleteTable(conn, dbName, tbl, schemaName);
+        },
+        danger: true,
       },
     ];
     setCtxMenu({ x: e.clientX, y: e.clientY, items });
@@ -465,6 +496,79 @@ export default function ConnectionTree() {
     ];
     setCtxMenu({ x: e.clientX, y: e.clientY, items });
   }, [connectedIds]);
+
+  /* ─── 删除操作 ─── */
+  const handleDeleteConnection = (conn: ConnectionConfig) => {
+    setConfirmState({
+      message: `确定要删除连接「${conn.name}」吗？`,
+      danger: true,
+      onConfirm: async () => {
+        if (connectedIds.has(conn.id)) {
+          await connectionApi.disconnect(conn.id);
+          setConnected(conn.id, false);
+        }
+        await connectionApi.remove(conn.id);
+        removeConnection(conn.id);
+        setTree((p) => { const n = { ...p }; delete n[conn.id]; return n; });
+        setConfirmState(null);
+      },
+    });
+  };
+
+  const handleDeleteDatabase = (conn: ConnectionConfig, dbName: string) => {
+    setConfirmState({
+      message: `确定要删除数据库「${dbName}」吗？此操作不可恢复！`,
+      danger: true,
+      onConfirm: async () => {
+        try {
+          await databaseApi.dropDatabase(conn.id, dbName);
+          // 从树中移除该库
+          updateConn(conn.id, (n) => ({
+            ...n, dbs: n.dbs?.filter((d) => d.name !== dbName),
+          }));
+          // 关闭相关标签页
+          const relatedTabs = tabs.filter(t =>
+            t.type === 'table' || t.type === 'query'
+          ).filter(t => t.database === dbName && t.connectionId === conn.id);
+          for (const tab of relatedTabs) {
+            removeTab(tab.id);
+        }
+        } catch (err: any) {
+          alert(`删除数据库失败: ${err}`);
+        }
+        setConfirmState(null);
+      },
+    });
+  };
+
+  const handleDeleteTable = (conn: ConnectionConfig, db: string, tableName: string, schema?: string) => {
+    setConfirmState({
+      message: `确定要删除表「${tableName}」吗？此操作不可恢复！`,
+      danger: true,
+      onConfirm: async () => {
+        try {
+          await databaseApi.dropTable(conn.id, db, tableName, schema);
+          // 刷新父节点
+          if (schema) {
+            handleRefreshSchema(conn, db, schema);
+          } else {
+            handleRefreshDb(conn, db);
+          }
+          // 关闭相关标签页
+          const fullTable = schema && schema !== 'public' ? `${schema}.${tableName}` : tableName;
+          const existingTab = tabs.find(t =>
+            t.type === 'table' &&
+            t.connectionId === conn.id &&
+            t.table === fullTable
+          );
+          if (existingTab) removeTab(existingTab.id);
+        } catch (err: any) {
+          alert(`删除表失败: ${err}`);
+        }
+        setConfirmState(null);
+      },
+    });
+  };
 
   /* ─── 空状态 ─── */
   if (connections.length === 0) {
@@ -565,7 +669,7 @@ export default function ConnectionTree() {
                               key={tbl.name}
                               className="tree-item"
                               onClick={(e) => { e.stopPropagation(); openTable(conn, db.name, tbl.name); }}
-                              onContextMenu={(e) => showTableContextMenu(e, conn, db.name, undefined)}
+                              onContextMenu={(e) => showTableContextMenu(e, conn, db.name, undefined, tbl.name)}
                             >
                               {tbl.table_type?.includes('VIEW') ? (
                                 <Eye size={11} className="text-purple-400 flex-shrink-0" />
@@ -614,7 +718,7 @@ export default function ConnectionTree() {
                                       key={tbl.name}
                                       className="tree-item"
                                       onClick={(e) => { e.stopPropagation(); openTable(conn, db.name, tbl.name, schema.name); }}
-                                      onContextMenu={(e) => showTableContextMenu(e, conn, db.name, schema.name)}
+                                      onContextMenu={(e) => showTableContextMenu(e, conn, db.name, schema.name, tbl.name)}
                                     >
                                       {tbl.table_type?.includes('VIEW') ? (
                                         <Eye size={11} className="text-purple-400 flex-shrink-0" />
@@ -713,6 +817,16 @@ export default function ConnectionTree() {
           y={ctxMenu.y}
           items={ctxMenu.items}
           onClose={() => setCtxMenu(null)}
+        />
+      )}
+
+      {/* 删除确认弹窗 */}
+      {confirmState && (
+        <ConfirmModal
+          message={confirmState.message}
+          onConfirm={() => confirmState.onConfirm()}
+          onCancel={() => setConfirmState(null)}
+          danger={confirmState.danger}
         />
       )}
     </div>

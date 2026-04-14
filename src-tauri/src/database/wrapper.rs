@@ -107,6 +107,15 @@ impl DbOps for Arc<MySqlPool> {
     ) -> Result<u64, String> {
         DbOps::insert_row(self.as_ref(), database, table, column_values, column_types).await
     }
+    fn is_postgres(&self) -> bool {
+        DbOps::is_postgres(self.as_ref())
+    }
+    async fn drop_database(&self, database_name: &str) -> Result<u64, String> {
+        DbOps::drop_database(self.as_ref(), database_name).await
+    }
+    async fn drop_table(&self, database: &str, table: &str, schema: Option<&str>) -> Result<u64, String> {
+        DbOps::drop_table(self.as_ref(), database, table, schema).await
+    }
 }
 
 impl DbOps for Arc<PgPool> {
@@ -212,6 +221,15 @@ impl DbOps for Arc<PgPool> {
         column_types: std::collections::HashMap<String, String>,
     ) -> Result<u64, String> {
         DbOps::insert_row(self.as_ref(), database, table, column_values, column_types).await
+    }
+    fn is_postgres(&self) -> bool {
+        DbOps::is_postgres(self.as_ref())
+    }
+    async fn drop_database(&self, database_name: &str) -> Result<u64, String> {
+        DbOps::drop_database(self.as_ref(), database_name).await
+    }
+    async fn drop_table(&self, database: &str, table: &str, schema: Option<&str>) -> Result<u64, String> {
+        DbOps::drop_table(self.as_ref(), database, table, schema).await
     }
 }
 
@@ -396,6 +414,24 @@ impl AnyDbPool {
                 p.insert_row(database, table, column_values, column_types)
                     .await
             }
+        }
+    }
+
+    pub fn is_postgres(&self) -> bool {
+        matches!(self, AnyDbPool::PG(_))
+    }
+
+    pub async fn drop_database(&self, database_name: &str) -> Result<u64, String> {
+        match self {
+            AnyDbPool::MySQL(p) => p.drop_database(database_name).await,
+            AnyDbPool::PG(p) => p.drop_database(database_name).await,
+        }
+    }
+
+    pub async fn drop_table(&self, database: &str, table: &str, schema: Option<&str>) -> Result<u64, String> {
+        match self {
+            AnyDbPool::MySQL(p) => p.drop_table(database, table, schema).await,
+            AnyDbPool::PG(p) => p.drop_table(database, table, schema).await,
         }
     }
 }

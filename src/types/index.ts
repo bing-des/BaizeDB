@@ -83,6 +83,8 @@ export interface Tab {
   content?: string;
   redisDbIndex?: number;
   redisKey?: string;
+  /** 查询结果（用于 SQL 控制台标签） */
+  results?: QueryResult[];
 }
 
 export interface TableMapping {

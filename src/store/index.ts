@@ -51,6 +51,7 @@ interface TabState {
   removeTab: (id: string) => void;
   setActiveTab: (id: string) => void;
   updateTabContent: (id: string, content: string) => void;
+  updateTabResults: (id: string, results: import('../types').QueryResult[]) => void;
   /** 关闭除指定标签外的所有标签 */
   closeOtherTabs: (keepId: string) => void;
   /** 关闭右侧所有标签 */
@@ -78,6 +79,10 @@ export const useTabStore = create<TabState>((set) => ({
   updateTabContent: (id, content) =>
     set((state) => ({
       tabs: state.tabs.map((t) => (t.id === id ? { ...t, content } : t)),
+    })),
+  updateTabResults: (id, results) =>
+    set((state) => ({
+      tabs: state.tabs.map((t) => (t.id === id ? { ...t, results } : t)),
     })),
   closeOtherTabs: (keepId) =>
     set((state) => ({

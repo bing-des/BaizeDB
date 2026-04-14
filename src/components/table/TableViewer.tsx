@@ -64,28 +64,39 @@ export default function TableViewer({ tab }: { tab: Tab }) {
   }
   
   const [filterConditions, setFilterConditions] = useState<Record<string, FilterCondition>>({});
-  
+  const filterConditionsRef = useRef<Record<string, FilterCondition>>({});
+
   // 构建过滤参数（发送到后端）
-  const buildFilters = useCallback(() => {
+  const buildFilters = useCallback((conditions?: Record<string, FilterCondition>) => {
     const result: Record<string, string> = {};
-    for (const [col, cond] of Object.entries(filterConditions)) {
+    const conds = conditions || filterConditionsRef.current;
+    for (const [col, cond] of Object.entries(conds)) {
       if (cond.value || cond.op === 'IS NULL' || cond.op === 'IS NOT NULL') {
         result[col] = `${cond.op}|${cond.value}`;
       }
     }
     return Object.keys(result).length > 0 ? result : null;
-  }, [filterConditions]);
+  }, []);
   
   const loadData = useCallback(async (p: number, size: number = pageSize) => {
     if (!database || !table) return;
     setLoading(true);
     try {
-      const sortBy = sortColumn !== null ? columns[sortColumn] : null;
+      // 使用当前闭包状态值（useCallback 依赖已包含 sortColumn/sortDirection/filterConditions/columns/pageSize）
+      const sortBy = sortColumn !== null && columns.length > 0 ? columns[sortColumn] : null;
       const sortOrder = sortDirection;
-      const filters = buildFilters();
+
+      // 构建 filters — 从 ref 读取最新值，避免 setState 批量延迟导致闭包陈旧
+      const filters: Record<string, string> = {};
+      for (const [col, cond] of Object.entries(filterConditionsRef.current)) {
+        if (cond.value || cond.op === 'IS NULL' || cond.op === 'IS NOT NULL') {
+          filters[col] = `${cond.op}|${cond.value}`;
+        }
+      }
+      const filtersParam = Object.keys(filters).length > 0 ? filters : null;
       
-      console.log(`[TableViewer] loadData connectionId=${connectionId} database=${database} table=${table} page=${p} size=${size}`, { sortBy, sortOrder, filters });
-      const r = await databaseApi.getTableData(connectionId, database, table, p, size, sortBy, sortOrder, filters);
+      console.log(`[TableViewer] loadData connectionId=${connectionId} database=${database} table=${table} page=${p} size=${size}`, { sortBy, sortOrder, filters: filtersParam });
+      const r = await databaseApi.getTableData(connectionId, database, table, p, size, sortBy, sortOrder, filtersParam);
       console.log(`[TableViewer] loaded columns=${r.columns.length} rows=${r.rows.length} total=${r.total}`);
       setColumns(r.columns);
       setColumnTypes(r.column_types || []);
@@ -99,7 +110,7 @@ export default function TableViewer({ tab }: { tab: Tab }) {
     } finally {
       setLoading(false);
     }
-  }, [connectionId, database, table, pageSize, sortColumn, sortDirection, columns, buildFilters]);
+  }, [connectionId, database, table, pageSize, sortColumn, sortDirection, filterConditions, columns]);
 
   useEffect(() => {
     loadData(1);
@@ -110,18 +121,37 @@ export default function TableViewer({ tab }: { tab: Tab }) {
     }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // 监听刷新事件（来自标签栏右键菜单），清空排序和过滤
+  useEffect(() => {
+    const handleRefresh = () => {
+      console.log('[TableViewer] refresh event received, clearing sort and filters');
+      setSortColumn(null);
+      setSortDirection('asc');
+      setFilterConditions({});
+      filterConditionsRef.current = {};
+      setFilterValues({});
+      setPage(1);
+      // 直接加载数据（ref 已同步，loadData 读到新值）
+      setTimeout(() => loadData(1), 0);
+    };
+    
+    window.addEventListener(`tab-refresh-${tab.id}`, handleRefresh);
+    return () => window.removeEventListener(`tab-refresh-${tab.id}`, handleRefresh);
+  }, [tab.id, loadData]);
+
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
 
   const go = (p: number) => { setPage(p); loadData(p); };
 
   // 切换排序：asc -> desc -> cancel，实时生效
   const toggleSort = (colIndex: number) => {
-    let newSortColumn: number | null = sortColumn;
-    let newSortDirection: 'asc' | 'desc' = sortDirection;
+    let newSortColumn: number | null;
+    let newSortDirection: 'asc' | 'desc';
     
     if (sortColumn === colIndex) {
       if (sortDirection === 'asc') {
         newSortDirection = 'desc';
+        newSortColumn = colIndex;
       } else {
         // 取消排序
         newSortColumn = null;
@@ -132,37 +162,13 @@ export default function TableViewer({ tab }: { tab: Tab }) {
       newSortDirection = 'asc';
     }
     
-    // 先更新状态
+    // 更新状态（触发 UI 更新 + loadData 通过闭包读到新值）
     setSortColumn(newSortColumn);
     setSortDirection(newSortDirection);
     setPage(1);
     
-    // 立即加载数据（使用新值）
-    if (database && table) {
-      setLoading(true);
-      databaseApi.getTableData(
-        connectionId,
-        database,
-        table,
-        1,
-        pageSize,
-        newSortColumn !== null ? columns[newSortColumn] : undefined,
-        newSortDirection,
-        buildFilters()
-      ).then((r) => {
-        setColumns(r.columns);
-        setColumnTypes(r.column_types || []);
-        setRows(r.rows);
-        setTotal(r.total);
-        setChanges([]);
-        changesRef.current = [];
-        setSelectedRowIndices(new Set());
-      }).catch((e) => {
-        console.error(`[TableViewer] loadData error:`, e);
-      }).finally(() => {
-        setLoading(false);
-      });
-    }
+    // 直接加载数据
+    loadData(1);
   };
   
   // 应用排序和过滤
@@ -171,64 +177,33 @@ export default function TableViewer({ tab }: { tab: Tab }) {
   // 重置所有过滤
   const resetFilters = () => {
     setFilterConditions({});
+    filterConditionsRef.current = {};
     setSortColumn(null);
     setSortDirection('asc');
     setPage(1);
     loadData(1);
   };
 
-  // 处理过滤条件变更并立即应用（同步执行）
+  // 处理过滤条件变更并立即应用
   const handleFilterChange = (column: string, condition: { column: string; op: FilterOp; value: string } | null) => {
     // 计算新的过滤条件
-    let newConditions: Record<string, { column: string; op: FilterOp; value: string }>;
+    let newConditions: Record<string, FilterCondition>;
     if (condition === null) {
-      newConditions = { ...filterConditions };
+      newConditions = { ...filterConditionsRef.current };
       delete newConditions[column];
     } else {
-      newConditions = { ...filterConditions, [column]: condition };
+      newConditions = { ...filterConditionsRef.current, [column]: condition };
     }
     
-    // 同步更新状态
+    // 同步写入 ref（确保 loadData 立即读到新值）
+    filterConditionsRef.current = newConditions;
+    
+    // 更新状态（触发 UI 更新）
     setFilterConditions(newConditions);
+    setPage(1);
     
-    // 立即使用新条件加载数据
-    if (database && table) {
-      setLoading(true);
-      setPage(1);
-      
-      // 构建 filters 对象
-      const filters: Record<string, string> = {};
-      Object.values(newConditions).forEach((cond) => {
-        if (cond.op === 'IS NULL' || cond.op === 'IS NOT NULL') {
-          filters[cond.column] = `${cond.op}|`;
-        } else {
-          filters[cond.column] = `${cond.op}|${cond.value}`;
-        }
-      });
-      
-      databaseApi.getTableData(
-        connectionId,
-        database,
-        table,
-        1,
-        pageSize,
-        sortColumn !== null ? columns[sortColumn] : undefined,
-        sortDirection,
-        Object.keys(filters).length > 0 ? filters : undefined
-      ).then((r) => {
-        setColumns(r.columns);
-        setColumnTypes(r.column_types || []);
-        setRows(r.rows);
-        setTotal(r.total);
-        setChanges([]);
-        changesRef.current = [];
-        setSelectedRowIndices(new Set());
-      }).catch((e) => {
-        console.error(`[TableViewer] loadData error:`, e);
-      }).finally(() => {
-        setLoading(false);
-      });
-    }
+    // 直接加载数据（从 ref 读到最新值）
+    loadData(1);
   };
 
   const exportCSV = () => {
@@ -515,7 +490,20 @@ export default function TableViewer({ tab }: { tab: Tab }) {
 
             <div className="h-4 w-px bg-[var(--border)]" />
 
-            <button className="btn-ghost py-1 text-xs" onClick={() => loadData(page)} disabled={loading}>
+            <button 
+              className="btn-ghost py-1 text-xs" 
+              onClick={() => {
+                setSortColumn(null);
+                setSortDirection('asc');
+                setFilterConditions({});
+                filterConditionsRef.current = {};
+                setFilterValues({});
+                setPage(1);
+                setTimeout(() => loadData(1), 0);
+              }} 
+              disabled={loading}
+              title="刷新并清空排序/过滤"
+            >
               <RefreshCw size={12} className={loading ? 'animate-spin' : ''} />
             </button>
             <button className="btn-ghost py-1 text-xs" onClick={exportCSV}>

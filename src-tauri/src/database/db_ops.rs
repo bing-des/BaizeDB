@@ -142,4 +142,13 @@ pub trait DbOps: Send + Sync {
         column_values: std::collections::HashMap<String, serde_json::Value>,
         column_types: std::collections::HashMap<String, String>,
     ) -> Result<u64, String>;
+
+    /// 是否为 PostgreSQL（用于区分 SQL 语法差异）
+    fn is_postgres(&self) -> bool;
+
+    /// 删除数据库（DROP DATABASE）
+    async fn drop_database(&self, database_name: &str) -> Result<u64, String>;
+
+    /// 删除表（DROP TABLE）
+    async fn drop_table(&self, database: &str, table: &str, schema: Option<&str>) -> Result<u64, String>;
 }

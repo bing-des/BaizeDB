@@ -53,7 +53,7 @@ interface ContextMenuState {
 
 export default function ConnectionTree() {
   const { connections, connectedIds, setConnected, removeConnection } = useConnectionStore();
-  const { addTab } = useTabStore();
+  const { tabs, activeTabId, addTab, setActiveTab } = useTabStore();
   const [tree, setTree] = useState<TreeState>({});
   const [connecting, setConnecting] = useState<string | null>(null);
   const [ctxMenu, setCtxMenu] = useState<ContextMenuState | null>(null);
@@ -237,14 +237,29 @@ export default function ConnectionTree() {
   const openTable = (conn: ConnectionConfig, db: string, table: string, schema?: string) => {
     // PG 的表名需要带 schema 前缀（如 "platform_app.app_role"），否则后续查询找不到表
     const fullTableName = schema && schema !== 'public' ? `${schema}.${table}` : table;
-    addTab({
-      id: uuidv4(),
-      title: table,
-      type: 'table',
-      connectionId: conn.id,
-      database: db,
-      table: fullTableName,
-    });
+    
+    // 检查是否已存在相同的表标签页
+    const existingTab = tabs.find(t => 
+      t.type === 'table' && 
+      t.connectionId === conn.id && 
+      t.database === db && 
+      t.table === fullTableName
+    );
+    
+    if (existingTab) {
+      // 切换到已存在的标签页
+      setActiveTab(existingTab.id);
+    } else {
+      // 创建新标签页
+      addTab({
+        id: uuidv4(),
+        title: table,
+        type: 'table',
+        connectionId: conn.id,
+        database: db,
+        table: fullTableName,
+      });
+    }
   };
 
   /* ─── Redis ─── */

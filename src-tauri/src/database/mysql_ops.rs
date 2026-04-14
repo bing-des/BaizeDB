@@ -104,6 +104,7 @@ impl DbOps for MySqlPool {
             return Ok(QueryResult {
                 columns: vec![],
                 rows: vec![],
+                column_types: None,
                 affected_rows: None,
                 execution_time_ms: start.elapsed().as_millis() as u64,
                 error: None,
@@ -116,11 +117,17 @@ impl DbOps for MySqlPool {
             .iter()
             .map(|c| c.name().to_string())
             .collect();
+        let column_types: Vec<String> = rows[0]
+            .columns()
+            .iter()
+            .map(|c| c.type_info().name().to_string())
+            .collect();
         let data = mysql_rows_to_json(&rows);
 
         Ok(QueryResult {
             columns,
             rows: data,
+            column_types: Some(column_types),
             affected_rows: None,
             execution_time_ms: start.elapsed().as_millis() as u64,
             error: None,
@@ -147,6 +154,7 @@ impl DbOps for MySqlPool {
             return Ok(QueryResult {
                 columns: vec![],
                 rows: vec![],
+                column_types: None,
                 affected_rows: None,
                 execution_time_ms: start.elapsed().as_millis() as u64,
                 error: None,
@@ -159,11 +167,17 @@ impl DbOps for MySqlPool {
             .iter()
             .map(|c| c.name().to_string())
             .collect();
+        let column_types: Vec<String> = rows[0]
+            .columns()
+            .iter()
+            .map(|c| c.type_info().name().to_string())
+            .collect();
         let data = mysql_rows_to_json(&rows);
 
         Ok(QueryResult {
             columns,
             rows: data,
+            column_types: Some(column_types),
             affected_rows: None,
             execution_time_ms: start.elapsed().as_millis() as u64,
             error: None,
@@ -191,7 +205,7 @@ impl DbOps for MySqlPool {
         update_row_impl(self, database, table, primary_key, primary_key_value, column_values).await
     }
 
-    async fn delete_row(&self, database: &str, table: &str, primary_key: &str, primary_key_value: serde_json::Value) -> Result<u64, String> {
+    async fn delete_row(&self, database: &str, table: &str, primary_key: &str, _primary_key_type: &str, primary_key_value: serde_json::Value) -> Result<u64, String> {
         let sql = format!("DELETE FROM `{}`.`{}` WHERE `{}` = ?", database, table, primary_key);
         let mut args = sqlx::mysql::MySqlArguments::default();
         bind_json_value_to_mysql_args(&mut args, &primary_key_value);

@@ -87,6 +87,7 @@ pub async fn execute_query(
         DbQueryResult {
             columns: vec![],
             rows: vec![],
+            column_types: None,
             affected_rows: Some(affected),
             execution_time_ms: ms,
             error: None,

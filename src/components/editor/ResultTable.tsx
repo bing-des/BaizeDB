@@ -47,6 +47,7 @@ export default function ResultTable({
   const [selectedCells, setSelectedCells] = useState<Set<string>>(new Set());
   const [selecting, setSelecting] = useState(false);
   const selectStartRef = useRef<{ row: number; col: number } | null>(null);
+  const copyIntentRef = useRef(false);
 
   // 右键菜单状态
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; row: number; col: number } | null>(null);
@@ -142,9 +143,16 @@ export default function ResultTable({
 
   // Ctrl+C 复制选中内容
   useEffect(() => {
-    const handler = (e: ClipboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && selectedCells.size > 0) {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // 检测 Ctrl+C 或 Cmd+C
+      if ((e.ctrlKey || e.metaKey) && e.key === 'c') {
+        copyIntentRef.current = true;
+      }
+    };
+    const handleCopy = (e: ClipboardEvent) => {
+      if (copyIntentRef.current && selectedCells.size > 0) {
         e.preventDefault();
+        copyIntentRef.current = false; // 重置
         const sorted = Array.from(selectedCells)
           .map(s => { const [r, c] = s.split(',').map(Number); return { r, c }; })
           .sort((a, b) => a.r - b.r || a.c - b.c);
@@ -176,8 +184,12 @@ export default function ResultTable({
         }
       }
     };
-    document.addEventListener('copy', handler);
-    return () => document.removeEventListener('copy', handler);
+    document.addEventListener('keydown', handleKeyDown);
+    document.addEventListener('copy', handleCopy);
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+      document.removeEventListener('copy', handleCopy);
+    };
   }, [selectedCells, rows]);
 
   // 右键菜单

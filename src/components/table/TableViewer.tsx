@@ -1,8 +1,9 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { RefreshCw, ChevronLeft, ChevronRight, Loader2, Table2, Download, Columns3, Save, Undo2, Plus } from 'lucide-react';
+import { RefreshCw, ChevronLeft, ChevronRight, Loader2, Table2, Download, Columns3, Save, Undo2, Plus, Trash2 } from 'lucide-react';
 import { databaseApi } from '../../utils/api';
 import type { Tab, ColumnInfo } from '../../types';
 import ResultTable from '../editor/ResultTable';
+import ConfirmModal from '../common/ConfirmModal';
 
 /** 记录单元格的变更 */
 interface CellChange {
@@ -14,17 +15,19 @@ interface CellChange {
 
 export default function TableViewer({ tab }: { tab: Tab }) {
   const [columns, setColumns] = useState<string[]>([]);
+  const [columnTypes, setColumnTypes] = useState<string[]>([]);
   const [rows, setRows] = useState<(string | number | boolean | null)[][]>([]);
   const [colInfos, setColInfos] = useState<ColumnInfo[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
-  const pageSize = 200;
+  const [pageSize, setPageSize] = useState(20);
   const [loading, setLoading] = useState(false);
   const [panel, setPanel] = useState<'data' | 'columns'>('data');
 
   // 编辑状态
   const [changes, setChanges] = useState<CellChange[]>([]);
   const [saving, setSaving] = useState(false);
+  const changesRef = useRef<CellChange[]>([]);
 
   // 选中的行（用于删除）
   const [selectedRowIndices, setSelectedRowIndices] = useState<Set<number>>(new Set());
@@ -34,24 +37,30 @@ export default function TableViewer({ tab }: { tab: Tab }) {
   const [newRowValues, setNewRowValues] = useState<Record<string, string>>({});
   const insertRef = useRef<HTMLDivElement>(null);
 
+  // 确认弹窗状态
+  const [confirmModal, setConfirmModal] = useState<{ message: string; onConfirm: () => void } | null>(null);
+
   const { connectionId, database, table } = tab;
 
   // 主键列信息
   const primaryKeyColIndex = colInfos.findIndex(c => c.key === 'PRI');
   const hasPrimaryKey = primaryKeyColIndex >= 0;
   const pkColumn = columns[primaryKeyColIndex] ?? 'id';
+  const pkColumnType = columnTypes[primaryKeyColIndex] ?? null;
 
-  const loadData = useCallback(async (p: number) => {
+  const loadData = useCallback(async (p: number, size: number = pageSize) => {
     if (!database || !table) return;
     setLoading(true);
     try {
-      console.log(`[TableViewer] loadData connectionId=${connectionId} database=${database} table=${table} page=${p} pageSize=${pageSize}`);
-      const r = await databaseApi.getTableData(connectionId, database, table, p, pageSize);
+      console.log(`[TableViewer] loadData connectionId=${connectionId} database=${database} table=${table} page=${p} size=${size}`);
+      const r = await databaseApi.getTableData(connectionId, database, table, p, size);
       console.log(`[TableViewer] loaded columns=${r.columns.length} rows=${r.rows.length} total=${r.total}`);
       setColumns(r.columns);
+      setColumnTypes(r.column_types || []);
       setRows(r.rows);
       setTotal(r.total);
       setChanges([]);
+      changesRef.current = [];
       setSelectedRowIndices(new Set());
     } catch (e) {
       console.error(`[TableViewer] loadData error:`, e);
@@ -94,12 +103,11 @@ export default function TableViewer({ tab }: { tab: Tab }) {
     setChanges(prev => {
       const existingIdx = prev.findIndex(c => c.rowIndex === rowIndex && c.colIndex === colIndex);
       const change: CellChange = { rowIndex, colIndex, oldValue: rows[rowIndex]?.[colIndex], newValue: value };
-      if (existingIdx >= 0) {
-        const updated = [...prev];
-        updated[existingIdx] = change;
-        return updated;
-      }
-      return [...prev, change];
+      const next = existingIdx >= 0
+        ? prev.map((c, i) => i === existingIdx ? change : c)
+        : [...prev, change];
+      changesRef.current = next;
+      return next;
     });
   }, [rows]);
 
@@ -113,20 +121,26 @@ export default function TableViewer({ tab }: { tab: Tab }) {
   };
 
   // 删除指定行（右键菜单触发）
-  const deleteRow = async (rowIndex: number) => {
-    if (!hasPrimaryKey || !database || !table) return;
-    if (!confirm(`确定删除第 ${rowIndex + 1} 行？`)) return;
-
-    try {
-      const pkValue = rows[rowIndex][primaryKeyColIndex];
-      console.log(`[TableViewer] deleteRow: pk=${pkValue}`);
-      await databaseApi.deleteTableData(connectionId, database, table, pkColumn, [pkValue]);
-      setSelectedRowIndices(prev => { const next = new Set(prev); next.delete(rowIndex); return next; });
-      loadData(page);
-    } catch (e) {
-      console.error('[TableViewer] deleteRow error:', e);
-      alert(`删除失败: ${e}`);
-    }
+  /** 右键菜单删除单行（触发确认弹窗） */
+  const deleteRow = (rowIndex: number) => {
+    if (!hasPrimaryKey || !database || !table || !pkColumn) return;
+    setConfirmModal({
+      message: `确定删除第 ${rowIndex + 1} 行数据吗？此操作不可撤销。`,
+      onConfirm: async () => {
+        try {
+          const pkValue = rows[rowIndex][primaryKeyColIndex!];
+          console.log('[TableViewer] deleteRow: pkColumn=', pkColumn, 'pkColumnType=', pkColumnType, 'pkValue=', pkValue);
+          await databaseApi.deleteTableData(connectionId, database, table, pkColumn!, pkColumnType, [pkValue]);
+          setSelectedRowIndices(prev => { const next = new Set(prev); next.delete(rowIndex); return next; });
+          loadData(page);
+        } catch (e) {
+          console.error('[TableViewer] deleteRow error:', e);
+          alert(`删除失败: ${e}`);
+        } finally {
+          setConfirmModal(null);
+        }
+      },
+    });
   };
 
   // 右键菜单：修改（进入编辑模式）
@@ -206,16 +220,19 @@ export default function TableViewer({ tab }: { tab: Tab }) {
       return restored;
     });
     setChanges([]);
+    changesRef.current = [];
   };
 
   // 保存修改到数据库
   const saveChanges = async () => {
-    if (!hasPrimaryKey || !database || !table || changes.length === 0) return;
+    // 使用 changesRef 获取最新 changes，避免 onBlur 竞态导致读到旧值
+    const currentChanges = changesRef.current;
+    if (!hasPrimaryKey || !database || !table || currentChanges.length === 0) return;
 
     setSaving(true);
     try {
       const rowChangeMap = new Map<number, CellChange[]>();
-      for (const ch of changes) {
+      for (const ch of currentChanges) {
         const list = rowChangeMap.get(ch.rowIndex) ?? [];
         list.push(ch);
         rowChangeMap.set(ch.rowIndex, list);
@@ -235,8 +252,8 @@ export default function TableViewer({ tab }: { tab: Tab }) {
       console.log(`[TableViewer] saveChanges: sending ${updates.length} row updates`);
       const affected = await databaseApi.updateTableData(connectionId, database, table, pkColumn, updates);
       console.log(`[TableViewer] saveChanges: ${affected} rows affected`);
+      changesRef.current = [];
       setChanges([]);
-      loadData(page);
     } catch (e) {
       console.error('[TableViewer] saveChanges error:', e);
       alert(`保存失败: ${e}`);
@@ -246,6 +263,22 @@ export default function TableViewer({ tab }: { tab: Tab }) {
   };
 
   const changedCount = new Set(changes.map(c => c.rowIndex)).size;
+
+  /** 批量删除选中的行 */
+  const deleteSelectedRows = async () => {
+    if (selectedRowIndices.size === 0 || !hasPrimaryKey || !pkColumn || !database || !table) return;
+    try {
+      console.log('[TableViewer] deleteSelectedRows: pkColumn=', pkColumn, 'indices=', Array.from(selectedRowIndices));
+      const pkValues = Array.from(selectedRowIndices).map(idx => rows[idx]?.[primaryKeyColIndex!]);
+      console.log('[TableViewer] deleteSelectedRows: pkValues=', pkValues);
+      await databaseApi.deleteTableData(connectionId, database, table, pkColumn!, pkColumnType, pkValues);
+      setSelectedRowIndices(new Set());
+      await loadData(page);
+    } catch (e) {
+      console.error('[TableViewer] deleteSelectedRows error:', e);
+      alert(`删除失败: ${e}`);
+    }
+  };
 
   return (
     <div className="h-full flex flex-col">
@@ -277,26 +310,57 @@ export default function TableViewer({ tab }: { tab: Tab }) {
         {panel === 'data' && (
           <div className="flex items-center gap-1.5">
             {/* 编辑操作按钮 */}
-            {hasPrimaryKey && changes.length > 0 && (
+            {hasPrimaryKey && (
               <>
                 <button
-                  className="btn-ghost py-1 px-2 text-xs text-yellow-400 hover:text-yellow-300"
-                  onClick={undoChanges}
-                  title="撤销所有修改"
+                  className="btn-ghost py-1 px-2 text-xs text-green-400 hover:text-green-300"
+                  onClick={() => setInsertingRow(true)}
+                  title="新增一行"
                 >
-                  <Undo2 size={12} />
-                  <span className="ml-1">撤销 ({changedCount})</span>
+                  <Plus size={12} />
+                  <span className="ml-1">新增</span>
                 </button>
-                <div className="h-4 w-px bg-[var(--border)]" />
-                <button
-                  className="btn-primary py-1 px-2.5 text-xs"
-                  onClick={saveChanges}
-                  disabled={saving}
-                  title="保存到数据库"
-                >
-                  <Save size={12} className={saving ? '' : 'mr-1'} />
-                  {saving ? '保存中...' : `保存 (${changes.length})`}
-                </button>
+                {selectedRowIndices.size > 0 && (
+                  <button
+                    className="btn-ghost py-1 px-2 text-xs text-red-400 hover:text-red-300"
+                    onClick={() => {
+                      setConfirmModal({
+                        message: `确定删除选中的 ${selectedRowIndices.size} 行数据吗？此操作不可撤销。`,
+                        onConfirm: async () => {
+                          await deleteSelectedRows();
+                          setConfirmModal(null);
+                        },
+                      });
+                    }}
+                    title={`删除选中的 ${selectedRowIndices.size} 行`}
+                  >
+                    <Trash2 size={12} />
+                    <span className="ml-1">删除 ({selectedRowIndices.size})</span>
+                  </button>
+                )}
+                {changes.length > 0 && (
+                  <>
+                    <div className="h-4 w-px bg-[var(--border)]" />
+                    <button
+                      className="btn-ghost py-1 px-2 text-xs text-yellow-400 hover:text-yellow-300"
+                      onClick={undoChanges}
+                      title="撤销所有修改"
+                    >
+                      <Undo2 size={12} />
+                      <span className="ml-1">撤销 ({changedCount})</span>
+                    </button>
+                    <div className="h-4 w-px bg-[var(--border)]" />
+                    <button
+                      className="btn-primary py-1 px-2.5 text-xs"
+                      onClick={saveChanges}
+                      disabled={saving}
+                      title="保存到数据库"
+                    >
+                      <Save size={12} className={saving ? '' : 'mr-1'} />
+                      {saving ? '保存中...' : `保存 (${changes.length})`}
+                    </button>
+                  </>
+                )}
               </>
             )}
 
@@ -317,6 +381,21 @@ export default function TableViewer({ tab }: { tab: Tab }) {
                 <ChevronRight size={12} />
               </button>
               <span className="ml-1 text-[var(--text-muted)]">共 {total.toLocaleString()} 行</span>
+
+              <select
+                className="ml-2 bg-[var(--bg-secondary)] border border-[var(--border)] rounded px-1.5 py-0.5 text-xs text-[var(--text-primary)] outline-none"
+                value={pageSize}
+                onChange={(e) => {
+                  const newSize = Number(e.target.value);
+                  setPageSize(newSize);
+                  setPage(1); // 切换条数时回到第一页
+                  loadData(1, newSize);
+                }}
+              >
+                {[10, 20, 50, 100, 200].map((n) => (
+                  <option key={n} value={n}>{n} 条/页</option>
+                ))}
+              </select>
             </div>
 
             {!hasPrimaryKey && (
@@ -340,7 +419,7 @@ export default function TableViewer({ tab }: { tab: Tab }) {
                 rows={rows}
                 editable={true}
                 primaryKeyColumn={primaryKeyColIndex}
-                primaryKeyValues={rows.map(r => r[primaryKeyColIndex])}
+                primaryKeyValues={rows.map(r => r[primaryKeyColIndex] as string | number | null)}
                 onCellChange={handleCellChange}
                 selectedRows={selectedRowIndices}
                 onRowSelect={handleRowSelect}
@@ -401,6 +480,16 @@ export default function TableViewer({ tab }: { tab: Tab }) {
           <ColumnsPanel columns={colInfos} />
         )}
       </div>
+
+      {/* 确认弹窗 */}
+      {confirmModal && (
+        <ConfirmModal
+          message={confirmModal.message}
+          onConfirm={confirmModal.onConfirm}
+          onCancel={() => setConfirmModal(null)}
+          danger
+        />
+      )}
     </div>
   );
 }

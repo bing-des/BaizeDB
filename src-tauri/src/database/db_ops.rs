@@ -44,6 +44,7 @@ pub struct ColumnMeta {
 pub struct QueryResult {
     pub columns: Vec<String>,
     pub rows: Vec<Vec<serde_json::Value>>,
+    pub column_types: Option<Vec<String>>,
     /// SELECT 查询时为 None，DML 时为受影响行数
     #[serde(skip_serializing_if = "Option::is_none")]
     pub affected_rows: Option<u64>,
@@ -120,6 +121,7 @@ pub trait DbOps: Send + Sync {
         database: &str,
         table: &str,
         primary_key: &str,
+        primary_key_type: &str,
         primary_key_value: serde_json::Value,
     ) -> Result<u64, String>;
 

@@ -56,8 +56,8 @@ export const databaseApi = {
   updateTableData: (connectionId: string, database: string, table: string, primaryKey: string, updates: Array<{ row_index: number; primary_key_value: any; column_values: Record<string, any>; column_types: Record<string, string> }>) =>
     invoke<number>('update_table_data', { connectionId, database, table, primaryKey, updates }),
   /** 删除表格数据（根据主键删除多行） */
-  deleteTableData: (connectionId: string, database: string, table: string, primaryKey: string, primaryKeyValues: Array<any>) =>
-    invoke<number>('delete_table_data', { connectionId, database, table, primaryKey, primaryKeyValues }),
+  deleteTableData: (connectionId: string, database: string, table: string, primaryKey: string, primaryKeyType: string, primaryKeyValues: Array<any>) =>
+    invoke<number>('delete_table_data', { connectionId, database, table, primaryKey, primaryKeyType, primaryKeyValues }),
   /** 插入一行新数据到表格 */
   insertTableData: (connectionId: string, database: string, table: string, columnValues: Record<string, any>, columnTypes?: Record<string, string>) =>
     invoke<number>('insert_table_data', { connectionId, database, table, columnValues, columnTypes }),

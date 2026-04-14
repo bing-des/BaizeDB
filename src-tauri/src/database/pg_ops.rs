@@ -55,22 +55,30 @@ impl DbOps for PgPool {
     }
 
     async fn list_columns(&self, database: &str, table: &str) -> Result<Vec<ColumnMeta>, String> {
+        // 拆分 "schema.table" 格式
+        let (schema_name, table_name) = if let Some(dot_pos) = table.find('.') {
+            (&table[..dot_pos], &table[dot_pos + 1..])
+        } else {
+            ("public", table)
+        };
+
         let sql =
             "SELECT c.column_name, c.data_type, c.is_nullable, \
                     CASE WHEN kcu.column_name IS NOT NULL THEN 'PRI' ELSE '' END, \
                     COALESCE(c.column_default, ''), '', '' \
              FROM information_schema.columns c \
              LEFT JOIN information_schema.key_column_usage kcu \
-               ON c.table_name = kcu.table_name AND c.column_name = kcu.column_name \
+               ON c.table_schema = kcu.table_schema AND c.table_name = kcu.table_name AND c.column_name = kcu.column_name \
                AND kcu.constraint_name IN ( \
                  SELECT constraint_name FROM information_schema.table_constraints \
-                 WHERE constraint_type = 'PRIMARY KEY' AND table_name = $1) \
-             WHERE c.table_catalog = $2 AND c.table_name = $3 ORDER BY c.ordinal_position";
+                 WHERE constraint_type = 'PRIMARY KEY' AND table_schema = $1 AND table_name = $2) \
+             WHERE c.table_schema = $1 AND c.table_catalog = $3 AND c.table_name = $4 ORDER BY c.ordinal_position";
 
         let rows = sqlx::query_as::<_, (String, String, String, String, String, String, String)>(sql)
-            .bind(table)
+            .bind(schema_name)
+            .bind(table_name)
             .bind(database)
-            .bind(table)
+            .bind(table_name)
             .fetch_all(self)
             .await
             .map_err(|e| e.to_string())?;
@@ -98,7 +106,7 @@ impl DbOps for PgPool {
     ) -> Result<QueryResult, String> {
         let start = std::time::Instant::now();
         let offset = (page - 1) * page_size;
-        let safe_table = format!("\"{}\"", table);
+        let safe_table = pg_safe_table_ref(table);
 
         let count: i64 = sqlx::query(&format!("SELECT COUNT(*) FROM {}", safe_table))
             .fetch_one(self)
@@ -118,6 +126,7 @@ impl DbOps for PgPool {
             return Ok(QueryResult {
                 columns: vec![],
                 rows: vec![],
+                column_types: None,
                 affected_rows: None,
                 execution_time_ms: start.elapsed().as_millis() as u64,
                 error: None,
@@ -130,11 +139,17 @@ impl DbOps for PgPool {
             .iter()
             .map(|c| c.name().to_string())
             .collect();
+        let column_types: Vec<String> = rows[0]
+            .columns()
+            .iter()
+            .map(|c| c.type_info().name().to_string())
+            .collect();
         let data = pg_rows_to_json(&rows);
 
         Ok(QueryResult {
             columns,
             rows: data,
+            column_types: Some(column_types),
             affected_rows: None,
             execution_time_ms: start.elapsed().as_millis() as u64,
             error: None,
@@ -143,7 +158,8 @@ impl DbOps for PgPool {
     }
 
     async fn get_row_count(&self, _database: &str, table: &str) -> Result<i64, String> {
-        let row = sqlx::query(&format!("SELECT COUNT(*) FROM \"{}\"", table))
+        let safe_table = pg_safe_table_ref(table);
+        let row = sqlx::query(&format!("SELECT COUNT(*) FROM {}", safe_table))
             .fetch_one(self)
             .await
             .map_err(|e| e.to_string())?;
@@ -161,6 +177,7 @@ impl DbOps for PgPool {
             return Ok(QueryResult {
                 columns: vec![],
                 rows: vec![],
+                column_types: None,
                 affected_rows: None,
                 execution_time_ms: start.elapsed().as_millis() as u64,
                 error: None,
@@ -173,11 +190,17 @@ impl DbOps for PgPool {
             .iter()
             .map(|c| c.name().to_string())
             .collect();
+        let column_types: Vec<String> = rows[0]
+            .columns()
+            .iter()
+            .map(|c| c.type_info().name().to_string())
+            .collect();
         let data = pg_rows_to_json(&rows);
 
         Ok(QueryResult {
             columns,
             rows: data,
+            column_types: Some(column_types),
             affected_rows: None,
             execution_time_ms: start.elapsed().as_millis() as u64,
             error: None,
@@ -250,11 +273,12 @@ impl DbOps for PgPool {
         Ok(result.rows_affected())
     }
 
-    async fn delete_row(&self, _database: &str, table: &str, primary_key: &str, primary_key_value: serde_json::Value) -> Result<u64, String> {
+    async fn delete_row(&self, _database: &str, table: &str, primary_key: &str, primary_key_type: &str, primary_key_value: serde_json::Value) -> Result<u64, String> {
         let safe_table = pg_safe_table_ref(table);
         let sql = format!("DELETE FROM {} WHERE \"{}\" = $1", safe_table, primary_key);
+        log::info!("Executing SQL: {} with PK value: {}", sql, primary_key_value);
         let mut args = sqlx::postgres::PgArguments::default();
-        bind_json_value_to_pg_args(&mut args, &primary_key_value, None);
+        bind_json_value_to_pg_args(&mut args, &primary_key_value, primary_key_type.into());
         let result = sqlx::query_with(&sql, args)
             .execute(self)
             .await
@@ -330,7 +354,7 @@ fn pg_rows_to_json(rows: &[sqlx::postgres::PgRow]) -> Vec<Vec<serde_json::Value>
                             .unwrap_or(serde_json::Value::Null)
                     } else if tname == "INT8" || tname == "BIGSERIAL" || tname == "BIGINT" {
                         row.try_get::<i64, _>(i)
-                            .map(|v| serde_json::json!(v))
+                            .map(|v| serde_json::json!(v.to_string())) // 大整数转字符串避免 JS 精度丢失
                             .unwrap_or(serde_json::Value::Null)
 
                     // ── 浮点类型（FLOAT4 用 f32，FLOAT8/NUMERIC 用 f64）──
@@ -343,13 +367,10 @@ fn pg_rows_to_json(rows: &[sqlx::postgres::PgRow]) -> Vec<Vec<serde_json::Value>
                             .map(|v| serde_json::json!(v))
                             .unwrap_or(serde_json::Value::Null)
                     } else if tname == "NUMERIC" || tname == "DECIMAL" {
-                        // NUMERIC 精度可能超过 f64，用 String 读取再尝试解析
+                        // NUMERIC 精度可能超过 f64，直接返回字符串避免精度丢失
                         row.try_get::<String, _>(i)
-                            .ok()
-                            .and_then(|s| s.parse::<f64>().ok().map(|n| serde_json::json!(n)))
-                            .unwrap_or_else(|| row.try_get::<String, _>(i)
-                                .map(|v| serde_json::json!(v))
-                                .unwrap_or(serde_json::Value::Null))
+                            .map(|v| serde_json::json!(v))
+                            .unwrap_or(serde_json::Value::Null)
 
                     // ── 布尔 ─────────────────────────────────────
                     } else if tname == "BOOL" || tname == "BOOLEAN" {

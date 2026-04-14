@@ -234,14 +234,16 @@ export default function ConnectionTree() {
     });
   };
 
-  const openTable = (conn: ConnectionConfig, db: string, table: string) => {
+  const openTable = (conn: ConnectionConfig, db: string, table: string, schema?: string) => {
+    // PG 的表名需要带 schema 前缀（如 "platform_app.app_role"），否则后续查询找不到表
+    const fullTableName = schema && schema !== 'public' ? `${schema}.${table}` : table;
     addTab({
       id: uuidv4(),
       title: table,
       type: 'table',
       connectionId: conn.id,
       database: db,
-      table,
+      table: fullTableName,
     });
   };
 
@@ -596,7 +598,7 @@ export default function ConnectionTree() {
                                     <div
                                       key={tbl.name}
                                       className="tree-item"
-                                      onClick={(e) => { e.stopPropagation(); openTable(conn, db.name, tbl.name); }}
+                                      onClick={(e) => { e.stopPropagation(); openTable(conn, db.name, tbl.name, schema.name); }}
                                       onContextMenu={(e) => showTableContextMenu(e, conn, db.name, schema.name)}
                                     >
                                       {tbl.table_type?.includes('VIEW') ? (

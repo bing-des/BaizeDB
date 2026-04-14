@@ -39,6 +39,7 @@ pub struct ColumnInfo {
 #[derive(Debug, Serialize)]
 pub struct TableDataResult {
     pub columns: Vec<String>,
+    pub column_types: Option<Vec<String>>,
     pub rows: Vec<Vec<serde_json::Value>>,
     pub total: i64,
 }
@@ -144,6 +145,7 @@ pub async fn get_table_data(
 
     Ok(TableDataResult {
         columns: r.columns,
+        column_types: r.column_types,
         rows: r.rows,
         total: r.total.unwrap_or(0),
     })
@@ -214,6 +216,7 @@ pub async fn delete_table_data(
     database: String,
     table: String,
     primary_key: String,
+    primary_key_type: String,
     primary_key_values: Vec<serde_json::Value>,
     state: State<'_, AppState>,
 ) -> std::result::Result<u64, String> {
@@ -227,7 +230,7 @@ pub async fn delete_table_data(
 
     for pk_value in primary_key_values {
         let affected = db_ops
-            .delete_row(&database, &table, &primary_key, pk_value)
+            .delete_row(&database, &table, &primary_key, &primary_key_type, pk_value)
             .await?;
         total_affected += affected;
     }

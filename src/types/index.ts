@@ -45,6 +45,7 @@ export interface QueryResult {
 
 export interface TableDataResult {
   columns: string[];
+  column_types: string[];
   rows: (string | number | boolean | null)[][];
   total: number;
 }

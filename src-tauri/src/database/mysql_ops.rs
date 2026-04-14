@@ -178,6 +178,58 @@ impl DbOps for MySqlPool {
             .map_err(|e| e.to_string())?;
         Ok(result.rows_affected())
     }
+
+    async fn update_row(
+        &self,
+        database: &str,
+        table: &str,
+        primary_key: &str,
+        primary_key_value: serde_json::Value,
+        column_values: std::collections::HashMap<String, serde_json::Value>,
+        _column_types: std::collections::HashMap<String, String>,
+    ) -> Result<u64, String> {
+        update_row_impl(self, database, table, primary_key, primary_key_value, column_values).await
+    }
+
+    async fn delete_row(&self, database: &str, table: &str, primary_key: &str, primary_key_value: serde_json::Value) -> Result<u64, String> {
+        let sql = format!("DELETE FROM `{}`.`{}` WHERE `{}` = ?", database, table, primary_key);
+        let mut args = sqlx::mysql::MySqlArguments::default();
+        bind_json_value_to_mysql_args(&mut args, &primary_key_value);
+        let result = sqlx::query_with(&sql, args)
+            .execute(self)
+            .await
+            .map_err(|e| format!("DELETE 失败: {}", e))?;
+        Ok(result.rows_affected())
+    }
+
+    async fn insert_row(
+        &self,
+        database: &str,
+        table: &str,
+        column_values: std::collections::HashMap<String, serde_json::Value>,
+        _column_types: std::collections::HashMap<String, String>,
+    ) -> Result<u64, String> {
+        if column_values.is_empty() {
+            return Err("插入数据不能为空".into());
+        }
+        let col_names: Vec<String> = column_values.keys().cloned().collect();
+        let placeholders: Vec<String> = (0..col_names.len()).map(|_| "?".to_string()).collect();
+        let sql = format!(
+            "INSERT INTO `{}`.{} ({}) VALUES ({})",
+            database, table,
+            col_names.iter().map(|c| format!("`{}`", c)).collect::<Vec<_>>().join(", "),
+            placeholders.join(", ")
+        );
+        let mut args = sqlx::mysql::MySqlArguments::default();
+        for col in &col_names {
+            bind_json_value_to_mysql_args(&mut args, column_values.get(col).unwrap());
+        }
+        let result = sqlx::query_with(&sql, args)
+            .execute(self)
+            .await
+            .map_err(|e| format!("INSERT 失败: {}", e))?;
+        Ok(result.rows_affected())
+    }
 }
 
 fn mysql_rows_to_json(rows: &[sqlx::mysql::MySqlRow]) -> Vec<Vec<serde_json::Value>> {
@@ -238,4 +290,70 @@ fn mysql_rows_to_json(rows: &[sqlx::mysql::MySqlRow]) -> Vec<Vec<serde_json::Val
                 .collect()
         })
         .collect()
+}
+
+async fn update_row_impl(
+    pool: &sqlx::MySqlPool,
+    _database: &str,
+    table: &str,
+    primary_key: &str,
+    primary_key_value: serde_json::Value,
+    column_values: std::collections::HashMap<String, serde_json::Value>,
+) -> Result<u64, String> {
+    if column_values.is_empty() {
+        return Ok(0);
+    }
+
+    // 构建 SET 子句和参数
+    let mut set_parts = Vec::new();
+    let col_names: Vec<String> = column_values.keys().cloned().collect();
+    for col in &col_names {
+        set_parts.push(format!("`{}` = ?", col));
+    }
+
+    let sql = format!(
+        "UPDATE `{}`.{} SET {} WHERE `{}` = ?",
+        _database, table, set_parts.join(", "), primary_key
+    );
+
+    // 使用 MySqlArguments 手动构建参数，避免 Query::bind 所有权问题
+    let mut args = sqlx::mysql::MySqlArguments::default();
+
+    // 绑定 SET 值
+    for col in &col_names {
+        let val = column_values.get(col).unwrap();
+        bind_json_value_to_mysql_args(&mut args, val);
+    }
+
+    // 绑定 WHERE 主键值
+    bind_json_value_to_mysql_args(&mut args, &primary_key_value);
+
+    let result = sqlx::query_with(&sql, args)
+        .execute(pool)
+        .await
+        .map_err(|e| format!("UPDATE 失败: {}", e))?;
+
+    Ok(result.rows_affected())
+}
+
+/// 将 JSON 值绑定到 MySqlArguments（避免 Query::bind 消耗所有权的问题）
+fn bind_json_value_to_mysql_args(args: &mut sqlx::mysql::MySqlArguments, val: &serde_json::Value) {
+    use sqlx::Arguments;
+    match val {
+        serde_json::Value::Null => { let _ = args.add(None::<String>); }
+        serde_json::Value::Number(n) => {
+            if n.is_f64() {
+                let _ = args.add(n.as_f64().unwrap_or(0.0));
+            } else if n.is_i64() {
+                let _ = args.add(n.as_i64().unwrap_or(0i64));
+            } else {
+                let _ = args.add(n.as_u64().unwrap_or(0) as i64);
+            }
+        }
+        serde_json::Value::String(s) => { let _ = args.add(s.clone()); }
+        serde_json::Value::Bool(b) => { let _ = args.add(*b); }
+        serde_json::Value::Array(_) | serde_json::Value::Object(_) => {
+            let _ = args.add(val.to_string());
+        }
+    }
 }

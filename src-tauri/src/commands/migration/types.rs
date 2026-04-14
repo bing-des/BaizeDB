@@ -126,6 +126,7 @@ pub struct ColumnDef {
 /// 这是迁移的中间表示，所有数据库类型都先映射到这里，
 /// 然后再从这里映射到目标数据库类型
 #[derive(Debug, Clone, PartialEq)]
+#[allow(dead_code)]
 pub enum DataType {
     // 整数类型
     TinyInt,

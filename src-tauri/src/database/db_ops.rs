@@ -64,6 +64,7 @@ pub struct QueryResult {
 /// - PostgreSQL: 需要传入**目标数据库的连接池**
 ///   （PG 主连接池连到默认库，切换 database 需要独立连接）
 #[allow(unused_variables)]
+#[allow(async_fn_in_trait)]
 pub trait DbOps: Send + Sync {
     /// 获取所有数据库/Schema 列表
     async fn list_databases(&self) -> Result<Vec<DatabaseMeta>, String>;
@@ -94,4 +95,45 @@ pub trait DbOps: Send + Sync {
 
     /// 执行 SQL（无返回值）
     async fn execute_sql(&self, sql: &str) -> Result<u64, String>;
+
+    /// 更新单行数据（根据主键定位行，更新指定列的值）
+    ///
+    /// # 参数
+    /// - `database`: 数据库名
+    /// - `table`: 表名
+    /// - `primary_key`: 主键列名（用于 WHERE 定位）
+    /// - `primary_key_value`: 主键值
+    /// - `column_values`: 要更新的列名和值
+    async fn update_row(
+        &self,
+        database: &str,
+        table: &str,
+        primary_key: &str,
+        primary_key_value: serde_json::Value,
+        column_values: std::collections::HashMap<String, serde_json::Value>,
+        column_types: std::collections::HashMap<String, String>,
+    ) -> Result<u64, String>;
+
+    /// 删除单行数据（根据主键定位）
+    async fn delete_row(
+        &self,
+        database: &str,
+        table: &str,
+        primary_key: &str,
+        primary_key_value: serde_json::Value,
+    ) -> Result<u64, String>;
+
+    /// 插入一行新数据
+    ///
+    /// # 参数
+    /// - `column_values`: 要插入的列名和值
+    /// - `column_types`: 列名→PG类型名的映射（如 {"role_id":"bigint","name":"varchar"}），
+    ///   PG 二进制协议需要此信息来决定参数绑定方式
+    async fn insert_row(
+        &self,
+        database: &str,
+        table: &str,
+        column_values: std::collections::HashMap<String, serde_json::Value>,
+        column_types: std::collections::HashMap<String, String>,
+    ) -> Result<u64, String>;
 }

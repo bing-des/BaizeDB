@@ -1,8 +1,7 @@
 //! MySQL 数据源实现
 
 use async_trait::async_trait;
-use serde::de::value;
-use sqlx::{MySqlPool, Row, ValueRef};
+use sqlx::{MySqlPool, Row};
 use crate::state::DbPool;
 
 use super::types::*;

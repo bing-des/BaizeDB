@@ -28,9 +28,17 @@ impl DbOps for Arc<MySqlPool> {
     async fn execute_sql(&self, sql: &str) -> Result<u64, String> {
         DbOps::execute_sql(self.as_ref(), sql).await
     }
+    async fn update_row(&self, database: &str, table: &str, primary_key: &str, primary_key_value: serde_json::Value, column_values: std::collections::HashMap<String, serde_json::Value>, column_types: std::collections::HashMap<String, String>) -> Result<u64, String> {
+        DbOps::update_row(self.as_ref(), database, table, primary_key, primary_key_value, column_values, column_types).await
+    }
+    async fn delete_row(&self, database: &str, table: &str, primary_key: &str, primary_key_value: serde_json::Value) -> Result<u64, String> {
+        DbOps::delete_row(self.as_ref(), database, table, primary_key, primary_key_value).await
+    }
+    async fn insert_row(&self, database: &str, table: &str, column_values: std::collections::HashMap<String, serde_json::Value>, column_types: std::collections::HashMap<String, String>) -> Result<u64, String> {
+        DbOps::insert_row(self.as_ref(), database, table, column_values, column_types).await
+    }
 }
 
-// ─── Arc<PgPool> 委托给 PgPool 的 DbOps impl ───
 impl DbOps for Arc<PgPool> {
     async fn list_databases(&self) -> Result<Vec<crate::database::db_ops::DatabaseMeta>, String> {
         DbOps::list_databases(self.as_ref()).await
@@ -55,6 +63,15 @@ impl DbOps for Arc<PgPool> {
     }
     async fn execute_sql(&self, sql: &str) -> Result<u64, String> {
         DbOps::execute_sql(self.as_ref(), sql).await
+    }
+    async fn update_row(&self, database: &str, table: &str, primary_key: &str, primary_key_value: serde_json::Value, column_values: std::collections::HashMap<String, serde_json::Value>, column_types: std::collections::HashMap<String, String>) -> Result<u64, String> {
+        DbOps::update_row(self.as_ref(), database, table, primary_key, primary_key_value, column_values, column_types).await
+    }
+    async fn delete_row(&self, database: &str, table: &str, primary_key: &str, primary_key_value: serde_json::Value) -> Result<u64, String> {
+        DbOps::delete_row(self.as_ref(), database, table, primary_key, primary_key_value).await
+    }
+    async fn insert_row(&self, database: &str, table: &str, column_values: std::collections::HashMap<String, serde_json::Value>, column_types: std::collections::HashMap<String, String>) -> Result<u64, String> {
+        DbOps::insert_row(self.as_ref(), database, table, column_values, column_types).await
     }
 }
 
@@ -118,6 +135,27 @@ impl AnyDbPool {
         match self {
             AnyDbPool::MySQL(p) => p.execute_sql(sql).await,
             AnyDbPool::PG(p) => p.execute_sql(sql).await,
+        }
+    }
+
+    pub async fn update_row(&self, database: &str, table: &str, primary_key: &str, primary_key_value: serde_json::Value, column_values: std::collections::HashMap<String, serde_json::Value>, column_types: std::collections::HashMap<String, String>) -> Result<u64, String> {
+        match self {
+            AnyDbPool::MySQL(p) => p.update_row(database, table, primary_key, primary_key_value, column_values, column_types).await,
+            AnyDbPool::PG(p) => p.update_row(database, table, primary_key, primary_key_value, column_values, column_types).await,
+        }
+    }
+
+    pub async fn delete_row(&self, database: &str, table: &str, primary_key: &str, primary_key_value: serde_json::Value) -> Result<u64, String> {
+        match self {
+            AnyDbPool::MySQL(p) => p.delete_row(database, table, primary_key, primary_key_value).await,
+            AnyDbPool::PG(p) => p.delete_row(database, table, primary_key, primary_key_value).await,
+        }
+    }
+
+    pub async fn insert_row(&self, database: &str, table: &str, column_values: std::collections::HashMap<String, serde_json::Value>, column_types: std::collections::HashMap<String, String>) -> Result<u64, String> {
+        match self {
+            AnyDbPool::MySQL(p) => p.insert_row(database, table, column_values, column_types).await,
+            AnyDbPool::PG(p) => p.insert_row(database, table, column_values, column_types).await,
         }
     }
 }

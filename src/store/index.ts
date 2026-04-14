@@ -51,6 +51,12 @@ interface TabState {
   removeTab: (id: string) => void;
   setActiveTab: (id: string) => void;
   updateTabContent: (id: string, content: string) => void;
+  /** 关闭除指定标签外的所有标签 */
+  closeOtherTabs: (keepId: string) => void;
+  /** 关闭右侧所有标签 */
+  closeRightTabs: (leftId: string) => void;
+  /** 关闭全部标签 */
+  clearAllTabs: () => void;
 }
 
 export const useTabStore = create<TabState>((set) => ({
@@ -73,6 +79,23 @@ export const useTabStore = create<TabState>((set) => ({
     set((state) => ({
       tabs: state.tabs.map((t) => (t.id === id ? { ...t, content } : t)),
     })),
+  closeOtherTabs: (keepId) =>
+    set((state) => ({
+      tabs: state.tabs.filter((t) => t.id === keepId),
+      activeTabId: keepId,
+    })),
+  closeRightTabs: (leftId) =>
+    set((state) => {
+      const idx = state.tabs.findIndex((t) => t.id === leftId);
+      if (idx < 0) return state;
+      const newTabs = state.tabs.slice(0, idx + 1);
+      let newActiveId = state.activeTabId;
+      if (!newTabs.find((t) => t.id === state.activeTabId)) {
+        newActiveId = newTabs[newTabs.length - 1].id ?? null;
+      }
+      return { tabs: newTabs, activeTabId: newActiveId };
+    }),
+  clearAllTabs: () => set({ tabs: [], activeTabId: null }),
 }));
 
 interface ThemeState {

@@ -1,11 +1,66 @@
-import { X, TerminalSquare, Table2, Key } from 'lucide-react';
+import { useState, useCallback } from 'react';
+import { X, TerminalSquare, Table2, Key, RefreshCw, Trash2, PanelRightClose, PanelsTopLeft, CircleX } from 'lucide-react';
 import { useTabStore } from '../../store';
 import QueryEditor from './QueryEditor';
 import TableViewer from '../table/TableViewer';
 import RedisKeyViewer from '../redis/RedisKeyViewer';
+import ContextMenu from '../common/ContextMenu';
+
+/** 自定义刷新事件，子组件通过 dispatchEvent 触发 */
+const TAB_REFRESH_EVENT = `tab-refresh`;
 
 export default function TabsArea() {
-  const { tabs, activeTabId, removeTab, setActiveTab } = useTabStore();
+  const { tabs, activeTabId, removeTab, setActiveTab, closeOtherTabs, closeRightTabs, clearAllTabs } = useTabStore();
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; tabId: string } | null>(null);
+
+  const handleContextMenu = (e: React.MouseEvent, tabId: string) => {
+    e.preventDefault();
+    setActiveTab(tabId);
+    setContextMenu({ x: e.clientX, y: e.clientY, tabId });
+  };
+
+  /** 向当前激活的标签页内容发送刷新事件 */
+  const refreshActiveTab = useCallback(() => {
+    if (!activeTabId) return;
+    window.dispatchEvent(new CustomEvent(`${TAB_REFRESH_EVENT}-${activeTabId}`));
+  }, [activeTabId]);
+
+  // 右键菜单项
+  const menuItems = contextMenu
+    ? [
+        {
+          label: '关闭',
+          icon: <X size={14} />,
+          onClick: () => removeTab(contextMenu.tabId),
+        },
+        {
+          label: '刷新',
+          icon: <RefreshCw size={14} />,
+          onClick: () => {
+            refreshActiveTab();
+          },
+        },
+        { separator: true as const },
+        {
+          label: '关闭其他',
+          icon: <PanelsTopLeft size={14} />,
+          onClick: () => closeOtherTabs(contextMenu.tabId),
+        },
+        {
+          label: '关闭右侧',
+          icon: <PanelRightClose size={14} />,
+          disabled: tabs[tabs.length - 1]?.id === contextMenu.tabId,
+          onClick: () => closeRightTabs(contextMenu.tabId),
+        },
+        { separator: true as const },
+        {
+          label: '关闭全部',
+          icon: <CircleX size={14} />,
+          danger: true,
+          onClick: () => clearAllTabs(),
+        },
+      ]
+    : [];
 
   if (tabs.length === 0) {
     return (
@@ -30,6 +85,7 @@ export default function TabsArea() {
             key={tab.id}
             className={`tab-item flex-shrink-0 ${activeTabId === tab.id ? 'active' : ''}`}
             onClick={() => setActiveTab(tab.id)}
+            onContextMenu={(e) => handleContextMenu(e, tab.id)}
           >
             {tab.type === 'query' ? (
               <TerminalSquare size={12} className="text-brand-400" />
@@ -52,11 +108,38 @@ export default function TabsArea() {
       {/* Tab content */}
       <div className="flex-1 overflow-hidden">
         {tabs.map((tab) => (
-          <div key={tab.id} className={`h-full ${activeTabId === tab.id ? 'block' : 'hidden'}`}>
-            {tab.type === 'query' ? <QueryEditor tab={tab} /> : tab.type === 'redis-key' ? <RedisKeyViewer tab={tab} /> : <TableViewer tab={tab} />}
-          </div>
+          <TabContent key={tab.id} tab={tab} active={activeTabId === tab.id} />
         ))}
       </div>
+
+      {/* Context Menu */}
+      {contextMenu && (
+        <ContextMenu x={contextMenu.x} y={contextMenu.y} items={menuItems} onClose={() => setContextMenu(null)} />
+      )}
+    </div>
+  );
+}
+
+/** 单个标签页内容，监听刷新事件并转发给子组件 ref */
+function TabContent({ tab, active }: { tab: import('../../types').Tab; active: boolean }) {
+  const [refreshKey, setRefreshKey] = useState(0);
+
+  // 监听来自 TabsArea 的刷新事件
+  useState(() => {
+    const handler = () => setRefreshKey((k) => k + 1);
+    window.addEventListener(`${TAB_REFRESH_EVENT}-${tab.id}`, handler);
+    return () => window.removeEventListener(`${TAB_REFRESH_EVENT}-${tab.id}`, handler);
+  });
+
+  if (!active) return null;
+
+  return (
+    <div className="h-full" key={refreshKey}>
+      {tab.type === 'query'
+        ? <QueryEditor tab={tab} />
+        : tab.type === 'redis-key'
+          ? <RedisKeyViewer tab={tab} />
+          : <TableViewer tab={tab} />}
     </div>
   );
 }

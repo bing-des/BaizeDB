@@ -9,6 +9,7 @@ use crate::state::{ConnectionConfig, DbType};
 ///
 /// 屏蔽底层实现细节，支持未来切换存储后端（如文件、远程服务等）。
 #[async_trait::async_trait]
+#[allow(dead_code)]
 pub trait ConnectionStore: Send + Sync {
     /// 初始化存储（建表等）
     async fn init(&self) -> Result<(), String>;

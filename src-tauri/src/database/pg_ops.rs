@@ -192,6 +192,120 @@ impl DbOps for PgPool {
             .map_err(|e| e.to_string())?;
         Ok(result.rows_affected())
     }
+
+    async fn update_row(
+        &self,
+        _database: &str,
+        table: &str,
+        primary_key: &str,
+        primary_key_value: serde_json::Value,
+        column_values: std::collections::HashMap<String, serde_json::Value>,
+        column_types: std::collections::HashMap<String, String>,
+    ) -> Result<u64, String> {
+        if column_values.is_empty() {
+            return Ok(0);
+        }
+
+        // PG 的 table 参数格式为 "schema.table"，需要拆分引用
+        let safe_table = pg_safe_table_ref(table);
+
+        // PG 标识符用双引号包裹（防止保留字冲突）
+        // 非字符串列的占位符加 ::type 显式转换（PG 二进制协议不接受 text→bigint 等隐式转换）
+        let mut set_parts = Vec::new();
+        let col_names: Vec<String> = column_values.keys().cloned().collect();
+        for (i, col) in col_names.iter().enumerate() {
+            let placeholder = match column_types.get(col).map(|s| s.as_str()) {
+                Some(t) if !matches!(t.to_uppercase().as_str(), "TEXT" | "VARCHAR" | "CHAR" | "BPCHAR" | "NAME" | "CHARACTER"
+                    | "JSON" | "JSONB") => format!("${}::{}", i + 1, t),
+                _ => format!("${}", i + 1),
+            };
+            set_parts.push(format!("\"{}\" = {}", col, placeholder));
+        }
+        let where_clause = format!("\"{}\" = ${}", primary_key, col_names.len() + 1);
+
+        let sql = format!(
+            "UPDATE {} SET {} WHERE {}",
+            safe_table, set_parts.join(", "), where_clause
+        );
+
+        // 使用 PgArguments 手动构建参数，避免 Query::bind 所有权问题
+        let mut args = sqlx::postgres::PgArguments::default();
+
+        // 绑定 SET 值（使用列类型信息做类型感知绑定）
+        for col in &col_names {
+            let ct = column_types.get(col).map(|s| s.as_str());
+            bind_json_value_to_pg_args(&mut args, column_values.get(col).unwrap(), ct);
+        }
+
+        // 绑定 WHERE 主键值
+        bind_json_value_to_pg_args(&mut args, &primary_key_value, None);
+
+        let query = sqlx::query_with(&sql, args);
+
+        let result = query
+            .execute(self)
+            .await
+            .map_err(|e| format!("UPDATE 失败: {}", e))?;
+
+        Ok(result.rows_affected())
+    }
+
+    async fn delete_row(&self, _database: &str, table: &str, primary_key: &str, primary_key_value: serde_json::Value) -> Result<u64, String> {
+        let safe_table = pg_safe_table_ref(table);
+        let sql = format!("DELETE FROM {} WHERE \"{}\" = $1", safe_table, primary_key);
+        let mut args = sqlx::postgres::PgArguments::default();
+        bind_json_value_to_pg_args(&mut args, &primary_key_value, None);
+        let result = sqlx::query_with(&sql, args)
+            .execute(self)
+            .await
+            .map_err(|e| format!("DELETE 失败: {}", e))?;
+        Ok(result.rows_affected())
+    }
+
+    async fn insert_row(&self, _database: &str, table: &str, column_values: std::collections::HashMap<String, serde_json::Value>, column_types: std::collections::HashMap<String, String>) -> Result<u64, String> {
+        if column_values.is_empty() {
+            return Err("插入数据不能为空".into());
+        }
+        let col_names: Vec<String> = column_values.keys().cloned().collect();
+        // 根据列类型决定占位符格式：
+        // - 非字符串类型需要 $N::type 显式转换（PG 二进制协议不接受 text→bigint 等隐式转换）
+        let placeholders: Vec<String> = (1..=col_names.len()).map(|n| {
+            match col_names.get(n-1).and_then(|c| column_types.get(c)).map(|s| s.as_str()) {
+                Some(t) if !matches!(t.to_uppercase().as_str(), "TEXT" | "VARCHAR" | "CHAR" | "BPCHAR" | "NAME" | "CHARACTER"
+                    | "JSON" | "JSONB") => format!("${}::{}", n, t),
+                _ => format!("${}", n),
+            }
+        }).collect();
+        let safe_table = pg_safe_table_ref(table);
+        let sql = format!(
+            "INSERT INTO {} ({}) VALUES ({})",
+            safe_table,
+            col_names.iter().map(|c| format!("\"{}\"", c)).collect::<Vec<_>>().join(", "),
+            placeholders.join(", ")
+        );
+        let mut args = sqlx::postgres::PgArguments::default();
+        for col in &col_names {
+            let col_type = column_types.get(col).map(|s| s.as_str());
+            bind_json_value_to_pg_args(&mut args, column_values.get(col).unwrap(), col_type);
+        }
+        let result = sqlx::query_with(&sql, args)
+            .execute(self)
+            .await
+            .map_err(|e| format!("INSERT 失败: {}", e))?;
+        Ok(result.rows_affected())
+    }
+}
+
+/// 将 "schema.table" 格式的表名拆分为 PG 安全引用: "schema"."table"
+/// 如果不含点号，则直接包裹为 "table"
+fn pg_safe_table_ref(table: &str) -> String {
+    if let Some(dot_pos) = table.find('.') {
+        let schema = &table[..dot_pos];
+        let tbl = &table[dot_pos + 1..];
+        format!("\"{}\".\"{}\"", schema, tbl)
+    } else {
+        format!("\"{}\"", table)
+    }
 }
 
 fn pg_rows_to_json(rows: &[sqlx::postgres::PgRow]) -> Vec<Vec<serde_json::Value>> {
@@ -326,5 +440,55 @@ fn pg_rows_to_json(rows: &[sqlx::postgres::PgRow]) -> Vec<Vec<serde_json::Value>
 /// 兜底处理：返回 [TypeName] 格式的调试信息，而非 panic 或 Null
 fn fallback_type(type_name: &str) -> serde_json::Value {
     format!("[{}]", type_name).into()
+}
+
+/// 将 JSON 值绑定到 PgArguments（避免 Query::bind 消耗所有权的问题）
+/// col_type: 目标列的 PG 类型名（如 "int8", "bigint", "timestamp"），用于决定绑定方式
+fn bind_json_value_to_pg_args(args: &mut sqlx::postgres::PgArguments, val: &serde_json::Value, col_type: Option<&str>) {
+    use sqlx::Arguments;
+    match val {
+        serde_json::Value::Null => { let _ = args.add(None::<String>); }
+        serde_json::Value::Number(n) => {
+            // 根据目标列类型选择正确的数值绑定
+            if n.is_f64() {
+                let _ = args.add(n.as_f64().unwrap_or(0.0));
+            } else if n.is_i64() {
+                let _ = args.add(n.as_i64().unwrap_or(0i64));
+            } else {
+                let _ = args.add(n.as_u64().unwrap_or(0) as i64);
+            }
+        }
+        serde_json::Value::String(s) => {
+            // 非字符串类型的目标列：尝试解析为对应 Rust 类型再绑定
+            let upper = col_type.map(|t| t.to_ascii_uppercase());
+            match upper.as_deref() {
+                Some("BIGINT") | Some("INT8") | Some("INT") if s.parse::<i64>().is_ok() => {
+                    let _ = args.add(s.parse::<i64>().unwrap());
+                }
+                Some("INTEGER") | Some("INT4") if s.parse::<i32>().is_ok() => {
+                    let _ = args.add(s.parse::<i32>().unwrap());
+                }
+                Some("SMALLINT") | Some("INT2") if s.parse::<i16>().is_ok() => {
+                    let _ = args.add(s.parse::<i16>().unwrap());
+                }
+                Some("DOUBLE PRECISION") | Some("FLOAT8") | Some("FLOAT") if s.parse::<f64>().is_ok() => {
+                    let _ = args.add(s.parse::<f64>().unwrap());
+                }
+                Some("REAL") | Some("FLOAT4") if s.parse::<f32>().is_ok() => {
+                    let _ = args.add(s.parse::<f32>().unwrap());
+                }
+                Some("BOOLEAN") | Some("BOOL") if s.eq_ignore_ascii_case("true")
+                    || s.eq_ignore_ascii_case("false") || s == "1" || s == "0" => {
+                    let _ = args.add(s.eq_ignore_ascii_case("true") || s == "1");
+                }
+                // 日期/时间/JSON 等复杂类型：绑 String（由 ::type 强转兜底）
+                _ => { let _ = args.add(s.clone()); }
+            }
+        }
+        serde_json::Value::Bool(b) => { let _ = args.add(*b); }
+        serde_json::Value::Array(_) | serde_json::Value::Object(_) => {
+            let _ = args.add(val.to_string());
+        }
+    }
 }
 

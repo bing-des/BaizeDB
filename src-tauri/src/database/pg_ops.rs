@@ -568,6 +568,7 @@ fn pg_rows_to_json(rows: &[sqlx::postgres::PgRow]) -> Vec<Vec<serde_json::Value>
                     } else if tname == "JSON" || tname == "JSONB" {
                         row.try_get::<serde_json::Value, _>(i)
                             .map(|v| v.clone())
+                            .map(|v| serde_json::json!(v.to_string())) // 直接返回 JSON 字符串，避免 sqlx 的 JSON 反序列化限制
                             .unwrap_or(fallback_type(&tname))
 
                     // ── 网络地址 ──────────────────────────────────
@@ -641,6 +642,14 @@ fn bind_json_value_to_pg_args(
                 }
                 Some("REAL") | Some("FLOAT4") if s.parse::<f32>().is_ok() => {
                     let _ = args.add(s.parse::<f32>().unwrap());
+                }
+                Some("JSON") | Some("JSONB") => {
+                    // JSON 列接受 JSON 字符串或 JSON 对象
+                    if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(s) {
+                        let _ = args.add(json_val);
+                    } else {
+                        let _ = args.add(s.clone());
+                    }
                 }
                 Some("BOOLEAN") | Some("BOOL")
                     if s.eq_ignore_ascii_case("true")

@@ -152,3 +152,20 @@ export interface ModifyColumnInput {
   default_value?: string;
   comment?: string;
 }
+
+/** 创建表的列定义 */
+export interface CreateTableColumn {
+  name: string;
+  data_type: string;
+  nullable: boolean;
+  default_value?: string;
+  comment?: string;
+  is_primary_key: boolean;
+}
+
+/** 创建表的输入参数 */
+export interface CreateTableInput {
+  table_name: string;
+  columns: CreateTableColumn[];
+  comment?: string;
+}

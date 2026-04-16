@@ -329,14 +329,146 @@ pub async fn drop_table(
     };
 
     let db_ops = pool.as_db_ops(&state, &connection_id, &database).await?;
-    let safe_table = table.replace('"', "");
-    let sql = if let Some(s) = schema {
-        let safe_schema = s.replace('"', "");
-        format!(r#"{0}."{1}"."{2}"#, if db_ops.is_postgres() { "" } else { "`" }, safe_schema, safe_table)
-    } else {
-        format!(r#"{0}{1}"#, if db_ops.is_postgres() { "\"" } else { "`" }, safe_table)
+    db_ops.drop_table(&database, &table, schema.as_deref()).await
+}
+
+/// 创建表（CREATE TABLE）
+#[derive(serde::Deserialize)]
+pub struct CreateTableInput {
+    pub table_name: String,
+    pub columns: Vec<CreateTableColumn>,
+    pub comment: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+pub struct CreateTableColumn {
+    pub name: String,
+    pub data_type: String,
+    pub nullable: bool,
+    pub default_value: Option<String>,
+    pub comment: Option<String>,
+    pub is_primary_key: bool,
+}
+
+#[tauri::command]
+pub async fn create_table(
+    connection_id: String,
+    database: String,
+    schema: Option<String>,
+    input: CreateTableInput,
+    state: State<'_, AppState>,
+) -> std::result::Result<(), String> {
+    let pool = {
+        let pools = state.pools.read().await;
+        pools.get(&connection_id).cloned().ok_or("连接未激活")?
     };
-    db_ops.execute_sql(&sql).await
+    let db_ops = pool.as_db_ops(&state, &connection_id, &database).await?;
+    let is_pg = db_ops.is_postgres();
+    
+    // 构建完整表名
+    let full_table_name = if let Some(s) = &schema {
+        if is_pg {
+            format!(r#""{}"."{}""#, s.replace('"', ""), input.table_name.replace('"', ""))
+        } else {
+            format!(r#"`{}`.`{}`"#, s.replace('`', ""), input.table_name.replace('`', ""))
+        }
+    } else {
+        if is_pg {
+            format!(r#""{}""#, input.table_name.replace('"', ""))
+        } else {
+            format!(r#"`{}`"#, input.table_name.replace('`', ""))
+        }
+    };
+    
+    // 构建列定义
+    let mut column_defs: Vec<String> = Vec::new();
+    let mut pk_columns: Vec<String> = Vec::new();
+    
+    for col in &input.columns {
+        let col_name = if is_pg {
+            format!(r#""{}""#, col.name.replace('"', ""))
+        } else {
+            format!(r#"`{}`"#, col.name.replace('`', ""))
+        };
+        
+        let mut def = format!("{} {}", col_name, col.data_type);
+        
+        if !col.nullable {
+            def.push_str(" NOT NULL");
+        }
+        
+        if let Some(default) = &col.default_value {
+            def.push_str(&format!(" DEFAULT {}", default));
+        }
+        
+        if is_pg {
+            // PG 的列注释单独处理
+        } else if let Some(comment) = &col.comment {
+            def.push_str(&format!(" COMMENT '{}'", comment.replace('\\', "\\\\").replace('\'', "\\'")));
+        }
+        
+        column_defs.push(def);
+        
+        if col.is_primary_key {
+            pk_columns.push(col_name);
+        }
+    }
+    
+    // 添加主键约束
+    if !pk_columns.is_empty() {
+        let pk_constraint = if is_pg {
+            format!("PRIMARY KEY ({})", pk_columns.join(", "))
+        } else {
+            format!("PRIMARY KEY ({})", pk_columns.join(", "))
+        };
+        column_defs.push(pk_constraint);
+    }
+    
+    // 构建 CREATE TABLE 语句
+    let sql = format!(
+        "CREATE TABLE {} (\n  {}\n)",
+        full_table_name,
+        column_defs.join(",\n  ")
+    );
+    
+    db_ops.execute_sql(&sql).await.map(|_| ())?;
+    
+    // PG: 单独添加表注释
+    if is_pg {
+        if let Some(comment) = &input.comment {
+            let comment_sql = format!(
+                "COMMENT ON TABLE {} IS '{}'",
+                full_table_name,
+                comment.replace('\\', "\\\\").replace('\'', "\\'")
+            );
+            db_ops.execute_sql(&comment_sql).await?;
+        }
+        // PG: 单独添加列注释
+        for col in &input.columns {
+            if let Some(comment) = &col.comment {
+                let col_name = format!(r#""{}""#, col.name.replace('"', ""));
+                let comment_sql = format!(
+                    "COMMENT ON COLUMN {}.{} IS '{}'",
+                    full_table_name,
+                    col_name,
+                    comment.replace('\\', "\\\\").replace('\'', "\\'")
+                );
+                db_ops.execute_sql(&comment_sql).await?;
+            }
+        }
+    } else {
+        // MySQL: 表注释
+        if let Some(comment) = &input.comment {
+            let comment_sql = format!(
+                "ALTER TABLE {} COMMENT = '{}'",
+                full_table_name,
+                comment.replace('\\', "\\\\").replace('\'', "\\'")
+            );
+            db_ops.execute_sql(&comment_sql).await?;
+        }
+    }
+    
+    Ok(())
 }
 
 /// 新增列（ALTER TABLE ... ADD COLUMN）

@@ -15,6 +15,7 @@ import type {
   MigrationProgress,
   AddColumnInput,
   ModifyColumnInput,
+  CreateTableInput,
 } from '../types';
 
 export type NewConnectionInput = Omit<ConnectionConfig, 'id'>;
@@ -69,6 +70,9 @@ export const databaseApi = {
   /** 删除表（DROP TABLE） */
   dropTable: (connectionId: string, database: string, table: string, schema?: string) =>
     invoke<number>('drop_table', { connectionId, database, table, schema }),
+  /** 创建表（CREATE TABLE） */
+  createTable: (connectionId: string, database: string, schema: string | undefined, input: CreateTableInput) =>
+    invoke<void>('create_table', { connectionId, database, schema, input }),
   /** 新增列（ALTER TABLE ... ADD COLUMN） */
   addColumn: (connectionId: string, database: string, table: string, input: AddColumnInput) =>
     invoke<void>('add_column', { connectionId, database, table, input }),

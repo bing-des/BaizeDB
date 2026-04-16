@@ -38,6 +38,7 @@ fn main() {
             commands::database::insert_table_data,
             commands::database::drop_database,
             commands::database::drop_table,
+            commands::database::create_table,
             commands::database::add_column,
             commands::database::drop_column,
             commands::database::modify_column,

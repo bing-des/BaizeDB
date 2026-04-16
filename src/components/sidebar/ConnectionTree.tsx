@@ -7,9 +7,10 @@ import {
 import { v4 as uuidv4 } from 'uuid';
 import { useConnectionStore, useTabStore } from '../../store';
 import { connectionApi, databaseApi, redisApi } from '../../utils/api';
-import type { ConnectionConfig, TableInfo, RedisKeyInfo } from '../../types';
+import type { ConnectionConfig, TableInfo, RedisKeyInfo, CreateTableInput } from '../../types';
 import ContextMenu, { type MenuEntry } from '../common/ContextMenu';
 import ConfirmModal from '../common/ConfirmModal';
+import CreateTableModal from '../table/CreateTableModal';
 
 interface SchemaNode {
   name: string;
@@ -62,6 +63,13 @@ export default function ConnectionTree() {
     message: string;
     onConfirm: () => void;
     danger: boolean;
+  } | null>(null);
+
+  // 创建表弹窗状态
+  const [createTableState, setCreateTableState] = useState<{
+    conn: ConnectionConfig;
+    dbName: string;
+    schema?: string;
   } | null>(null);
 
   const updateConn = (id: string, fn: (n: ConnNode) => ConnNode) =>
@@ -414,6 +422,11 @@ export default function ConnectionTree() {
         onClick: () => openQuery(conn, dbName),
       },
       {
+        label: '新建表',
+        icon: <Plus size={13} />,
+        onClick: () => setCreateTableState({ conn, dbName }),
+      },
+      {
         label: '刷新',
         icon: <RefreshCw size={13} />,
         onClick: () => handleRefreshDb(conn, dbName),
@@ -437,6 +450,11 @@ export default function ConnectionTree() {
         label: '新建查询',
         icon: <TerminalSquare size={13} />,
         onClick: () => openQuery(conn, dbName),
+      },
+      {
+        label: '新建表',
+        icon: <Plus size={13} />,
+        onClick: () => setCreateTableState({ conn, dbName, schema: schemaName }),
       },
       {
         label: '刷新',
@@ -568,6 +586,22 @@ export default function ConnectionTree() {
         setConfirmState(null);
       },
     });
+  };
+
+  const handleCreateTable = async (input: CreateTableInput) => {
+    if (!createTableState) return;
+    const { conn, dbName, schema } = createTableState;
+    try {
+      await databaseApi.createTable(conn.id, dbName, schema, input);
+      // 刷新父节点
+      if (schema) {
+        handleRefreshSchema(conn, dbName, schema);
+      } else {
+        handleRefreshDb(conn, dbName);
+      }
+    } catch (err: any) {
+      throw err;
+    }
   };
 
   /* ─── 空状态 ─── */
@@ -827,6 +861,18 @@ export default function ConnectionTree() {
           onConfirm={() => confirmState.onConfirm()}
           onCancel={() => setConfirmState(null)}
           danger={confirmState.danger}
+        />
+      )}
+
+      {/* 创建表弹窗 */}
+      {createTableState && (
+        <CreateTableModal
+          isOpen={true}
+          isPostgres={createTableState.conn.db_type === 'postgresql'}
+          database={createTableState.dbName}
+          schema={createTableState.schema}
+          onClose={() => setCreateTableState(null)}
+          onSubmit={handleCreateTable}
         />
       )}
     </div>

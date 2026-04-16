@@ -131,3 +131,24 @@ export type MigrationStatus =
   | 'MigratingData'
   | 'Completed'
   | 'Failed';
+
+// ─────────── 表结构管理 ───────────
+
+/** 新增列的输入参数 */
+export interface AddColumnInput {
+  column_name: string;
+  column_type: string;
+  nullable: boolean;
+  default_value?: string;
+  comment?: string;
+}
+
+/** 修改列的输入参数 */
+export interface ModifyColumnInput {
+  old_name: string;
+  new_name: string;
+  column_type: string;
+  nullable: boolean;
+  default_value?: string;
+  comment?: string;
+}

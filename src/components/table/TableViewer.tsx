@@ -4,6 +4,8 @@ import { databaseApi } from '../../utils/api';
 import type { Tab, ColumnInfo } from '../../types';
 import ResultTable from '../editor/ResultTable';
 import ConfirmModal from '../common/ConfirmModal';
+import SchemaEditor from './SchemaEditor';
+import { useConnectionStore } from '../../store';
 
 /** 记录单元格的变更 */
 interface CellChange {
@@ -14,6 +16,9 @@ interface CellChange {
 }
 
 export default function TableViewer({ tab }: { tab: Tab }) {
+  // 提前解构 connectionId（isPostgres 需要用到）
+  const { connectionId, database, table } = tab;
+
   const [columns, setColumns] = useState<string[]>([]);
   const [columnTypes, setColumnTypes] = useState<string[]>([]);
   const [rows, setRows] = useState<(string | number | boolean | null)[][]>([]);
@@ -23,6 +28,10 @@ export default function TableViewer({ tab }: { tab: Tab }) {
   const [pageSize, setPageSize] = useState(20);
   const [loading, setLoading] = useState(false);
   const [panel, setPanel] = useState<'data' | 'columns'>('data');
+
+  // 判断当前连接是否为 PostgreSQL（影响 SchemaEditor 的类型选项和 SQL 语法）
+  const connections = useConnectionStore(s => s.connections);
+  const isPostgres = connections.find(c => c.id === connectionId)?.db_type === 'postgresql';
 
   // 排序状态
   const [sortColumn, setSortColumn] = useState<number | null>(null);
@@ -45,8 +54,6 @@ export default function TableViewer({ tab }: { tab: Tab }) {
 
   // 确认弹窗状态
   const [confirmModal, setConfirmModal] = useState<{ message: string; onConfirm: () => void } | null>(null);
-
-  const { connectionId, database, table } = tab;
 
   // 主键列信息
   const primaryKeyColIndex = colInfos.findIndex(c => c.key === 'PRI');
@@ -620,7 +627,21 @@ export default function TableViewer({ tab }: { tab: Tab }) {
             </div>
           )
         ) : (
-          <ColumnsPanel columns={colInfos} />
+          <SchemaEditor
+            connectionId={connectionId}
+            database={database ?? ''}
+            table={table ?? ''}
+            isPostgres={isPostgres ?? false}
+            columns={colInfos}
+            onRefresh={() => {
+              // 刷新列结构
+              if (database && table) {
+                databaseApi.listColumns(connectionId, database, table)
+                  .then(cols => setColInfos(cols))
+                  .catch(e => console.error('[TableViewer] refresh columns error:', e));
+              }
+            }}
+          />
         )}
       </div>
 
@@ -637,50 +658,6 @@ export default function TableViewer({ tab }: { tab: Tab }) {
   );
 }
 
-function ColumnsPanel({ columns }: { columns: ColumnInfo[] }) {
-  if (!columns.length) return (
-    <div className="flex items-center justify-center h-16 text-xs text-[var(--text-muted)]">
-      <Loader2 size={13} className="animate-spin mr-2" /> 加载列信息...
-    </div>
-  );
 
-  return (
-    <div className="overflow-auto h-full">
-      <table className="min-w-full text-xs border-collapse">
-        <thead className="sticky top-0 bg-[var(--bg-tertiary)] z-10">
-          <tr>
-            {['列名', '类型', '可空', '键', '默认值', '备注'].map((h) => (
-              <th key={h} className="px-3 py-2 text-left font-semibold text-[var(--text-secondary)] border-b border-r border-[var(--border)] whitespace-nowrap">
-                {h}
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {columns.map((col) => (
-            <tr key={col.name} className="hover:bg-brand-500/5 even:bg-[var(--bg-secondary)]/30">
-              <td className="px-3 py-1.5 border-r border-[var(--border)] font-mono font-medium text-[var(--text-primary)]">{col.name}</td>
-              <td className="px-3 py-1.5 border-r border-[var(--border)] font-mono text-purple-400">{col.data_type}</td>
-              <td className="px-3 py-1.5 border-r border-[var(--border)]">
-                {col.nullable ? <span className="text-yellow-500">YES</span> : <span className="text-[var(--text-muted)]">NO</span>}
-              </td>
-              <td className="px-3 py-1.5 border-r border-[var(--border)]">
-                {col.key && (
-                  <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${
-                    col.key === 'PRI' ? 'bg-yellow-500/20 text-yellow-400' :
-                    col.key === 'UNI' ? 'bg-blue-500/20 text-blue-400' :
-                    'bg-[var(--bg-tertiary)] text-[var(--text-muted)]'
-                  }`}>{col.key}</span>
-                )}
-              </td>
-              <td className="px-3 py-1.5 border-r border-[var(--border)] font-mono text-[var(--text-muted)]">
-                {col.default_value ?? <span className="italic text-[var(--text-muted)]">NULL</span>}
-              </td>
-              <td className="px-3 py-1.5 border-r border-[var(--border)] text-[var(--text-muted)]">{col.comment}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-}
+// ColumnsPanel 已被 SchemaEditor 替代（src/components/table/SchemaEditor.tsx）
+

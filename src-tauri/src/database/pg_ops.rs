@@ -69,8 +69,11 @@ impl DbOps for PgPool {
         let sql =
             "SELECT c.column_name, c.data_type, c.is_nullable, \
                     CASE WHEN kcu.column_name IS NOT NULL THEN 'PRI' ELSE '' END, \
-                    COALESCE(c.column_default, ''), '', '' \
+                    COALESCE(c.column_default, ''), '', \
+                    COALESCE(pg_catalog.col_description(pgc.oid, c.ordinal_position), '') \
              FROM information_schema.columns c \
+             JOIN pg_catalog.pg_class pgc ON pgc.relname = c.table_name \
+             JOIN pg_catalog.pg_namespace pgn ON pgn.oid = pgc.relnamespace AND pgn.nspname = c.table_schema \
              LEFT JOIN information_schema.key_column_usage kcu \
                ON c.table_schema = kcu.table_schema AND c.table_name = kcu.table_name AND c.column_name = kcu.column_name \
                AND kcu.constraint_name IN ( \
@@ -97,7 +100,7 @@ impl DbOps for PgPool {
                 key: if r.3.is_empty() { None } else { Some(r.3) },
                 default_value: if r.4.is_empty() { None } else { Some(r.4) },
                 extra: None,
-                comment: None,
+                comment: if r.6.is_empty() { None } else { Some(r.6) },
             })
             .collect())
     }
@@ -451,6 +454,125 @@ impl DbOps for PgPool {
         };
         let sql = format!("DROP TABLE {}", safe_table);
         self.execute_sql(&sql).await
+    }
+
+    async fn add_column(
+        &self,
+        _database: &str,
+        table: &str,
+        column_name: &str,
+        column_type: &str,
+        nullable: bool,
+        default_value: Option<&str>,
+        comment: Option<&str>,
+    ) -> Result<(), String> {
+        let safe_table = pg_safe_table_ref(table);
+        let null_clause = if nullable { "" } else { " NOT NULL" };
+        let default_clause = match default_value {
+            Some(v) if !v.is_empty() => format!(" DEFAULT {}", v),
+            _ => String::new(),
+        };
+        let sql = format!(
+            r#"ALTER TABLE {} ADD COLUMN "{}" {}{}{}"#,
+            safe_table,
+            column_name.replace('"', ""),
+            column_type,
+            null_clause,
+            default_clause,
+        );
+        sqlx::query(&sql).execute(self).await.map_err(|e| format!("ADD COLUMN 失败: {}", e))?;
+
+        // PG 通过单独的 COMMENT ON COLUMN 添加注释
+        if let Some(c) = comment {
+            if !c.is_empty() {
+                let cmt_sql = format!(
+                    r#"COMMENT ON COLUMN {}."{}" IS '{}'"#,
+                    safe_table,
+                    column_name.replace('"', ""),
+                    c.replace('\'', "''"),
+                );
+                sqlx::query(&cmt_sql).execute(self).await.map_err(|e| format!("COMMENT 失败: {}", e))?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn drop_column(
+        &self,
+        _database: &str,
+        table: &str,
+        column_name: &str,
+    ) -> Result<(), String> {
+        let safe_table = pg_safe_table_ref(table);
+        let sql = format!(
+            r#"ALTER TABLE {} DROP COLUMN "{}""#,
+            safe_table,
+            column_name.replace('"', ""),
+        );
+        sqlx::query(&sql).execute(self).await.map_err(|e| format!("DROP COLUMN 失败: {}", e))?;
+        Ok(())
+    }
+
+    async fn modify_column(
+        &self,
+        _database: &str,
+        table: &str,
+        old_name: &str,
+        new_name: &str,
+        column_type: &str,
+        nullable: bool,
+        default_value: Option<&str>,
+        comment: Option<&str>,
+    ) -> Result<(), String> {
+        let safe_table = pg_safe_table_ref(table);
+        let safe_old = old_name.replace('"', "");
+        let safe_new = new_name.replace('"', "");
+
+        // 1. 修改类型
+        let alter_type_sql = format!(
+            r#"ALTER TABLE {} ALTER COLUMN "{}" TYPE {} USING "{}"::{}"#,
+            safe_table, safe_old, column_type, safe_old, column_type,
+        );
+        sqlx::query(&alter_type_sql).execute(self).await.map_err(|e| format!("ALTER TYPE 失败: {}", e))?;
+
+        // 2. 修改 NULL 约束
+        let null_sql = if nullable {
+            format!(r#"ALTER TABLE {} ALTER COLUMN "{}" DROP NOT NULL"#, safe_table, safe_old)
+        } else {
+            format!(r#"ALTER TABLE {} ALTER COLUMN "{}" SET NOT NULL"#, safe_table, safe_old)
+        };
+        sqlx::query(&null_sql).execute(self).await.map_err(|e| format!("NULL 约束修改失败: {}", e))?;
+
+        // 3. 修改默认值
+        let default_sql = match default_value {
+            Some(v) if !v.is_empty() => {
+                format!(r#"ALTER TABLE {} ALTER COLUMN "{}" SET DEFAULT {}"#, safe_table, safe_old, v)
+            }
+            _ => format!(r#"ALTER TABLE {} ALTER COLUMN "{}" DROP DEFAULT"#, safe_table, safe_old),
+        };
+        sqlx::query(&default_sql).execute(self).await.map_err(|e| format!("DEFAULT 修改失败: {}", e))?;
+
+        // 4. 重命名列（如果名字不同）
+        if safe_old != safe_new {
+            let rename_sql = format!(
+                r#"ALTER TABLE {} RENAME COLUMN "{}" TO "{}""#,
+                safe_table, safe_old, safe_new,
+            );
+            sqlx::query(&rename_sql).execute(self).await.map_err(|e| format!("重命名列失败: {}", e))?;
+        }
+
+        // 5. 更新注释
+        let col_ref = if safe_old != safe_new { &safe_new } else { &safe_old };
+        if let Some(c) = comment {
+            if !c.is_empty() {
+                let cmt_sql = format!(
+                    r#"COMMENT ON COLUMN {}."{}" IS '{}'"#,
+                    safe_table, col_ref, c.replace('\'', "''"),
+                );
+                sqlx::query(&cmt_sql).execute(self).await.map_err(|e| format!("COMMENT 失败: {}", e))?;
+            }
+        }
+        Ok(())
     }
 }
 /// 如果不含点号，则直接包裹为 "table"

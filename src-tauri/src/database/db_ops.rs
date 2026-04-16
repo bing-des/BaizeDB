@@ -151,4 +151,56 @@ pub trait DbOps: Send + Sync {
 
     /// 删除表（DROP TABLE）
     async fn drop_table(&self, database: &str, table: &str, schema: Option<&str>) -> Result<u64, String>;
+
+    // ─────────── 表结构管理 ───────────
+
+    /// 新增列（ALTER TABLE ... ADD COLUMN）
+    ///
+    /// # 参数
+    /// - `database`: 数据库名
+    /// - `table`: 表名（PG 格式：schema.table 或 table）
+    /// - `column_name`: 新列名
+    /// - `column_type`: 列类型字符串（如 `VARCHAR(255)`, `INT`, `TEXT`）
+    /// - `nullable`: 是否允许 NULL
+    /// - `default_value`: 可选的默认值表达式字符串
+    /// - `comment`: 可选注释（MySQL 专有；PG 通过 COMMENT ON 实现）
+    async fn add_column(
+        &self,
+        database: &str,
+        table: &str,
+        column_name: &str,
+        column_type: &str,
+        nullable: bool,
+        default_value: Option<&str>,
+        comment: Option<&str>,
+    ) -> Result<(), String>;
+
+    /// 删除列（ALTER TABLE ... DROP COLUMN）
+    async fn drop_column(
+        &self,
+        database: &str,
+        table: &str,
+        column_name: &str,
+    ) -> Result<(), String>;
+
+    /// 修改列定义（ALTER TABLE ... MODIFY COLUMN / ALTER COLUMN）
+    ///
+    /// # 参数
+    /// - `old_name`: 原列名
+    /// - `new_name`: 新列名（若不改名，传与 old_name 相同的值）
+    /// - `column_type`: 新类型字符串
+    /// - `nullable`: 是否允许 NULL
+    /// - `default_value`: 新默认值（None 表示 DROP DEFAULT）
+    /// - `comment`: 新注释
+    async fn modify_column(
+        &self,
+        database: &str,
+        table: &str,
+        old_name: &str,
+        new_name: &str,
+        column_type: &str,
+        nullable: bool,
+        default_value: Option<&str>,
+        comment: Option<&str>,
+    ) -> Result<(), String>;
 }

@@ -116,6 +116,34 @@ impl DbOps for Arc<MySqlPool> {
     async fn drop_table(&self, database: &str, table: &str, schema: Option<&str>) -> Result<u64, String> {
         DbOps::drop_table(self.as_ref(), database, table, schema).await
     }
+    async fn add_column(
+        &self,
+        database: &str,
+        table: &str,
+        column_name: &str,
+        column_type: &str,
+        nullable: bool,
+        default_value: Option<&str>,
+        comment: Option<&str>,
+    ) -> Result<(), String> {
+        DbOps::add_column(self.as_ref(), database, table, column_name, column_type, nullable, default_value, comment).await
+    }
+    async fn drop_column(&self, database: &str, table: &str, column_name: &str) -> Result<(), String> {
+        DbOps::drop_column(self.as_ref(), database, table, column_name).await
+    }
+    async fn modify_column(
+        &self,
+        database: &str,
+        table: &str,
+        old_name: &str,
+        new_name: &str,
+        column_type: &str,
+        nullable: bool,
+        default_value: Option<&str>,
+        comment: Option<&str>,
+    ) -> Result<(), String> {
+        DbOps::modify_column(self.as_ref(), database, table, old_name, new_name, column_type, nullable, default_value, comment).await
+    }
 }
 
 impl DbOps for Arc<PgPool> {
@@ -230,6 +258,34 @@ impl DbOps for Arc<PgPool> {
     }
     async fn drop_table(&self, database: &str, table: &str, schema: Option<&str>) -> Result<u64, String> {
         DbOps::drop_table(self.as_ref(), database, table, schema).await
+    }
+    async fn add_column(
+        &self,
+        database: &str,
+        table: &str,
+        column_name: &str,
+        column_type: &str,
+        nullable: bool,
+        default_value: Option<&str>,
+        comment: Option<&str>,
+    ) -> Result<(), String> {
+        DbOps::add_column(self.as_ref(), database, table, column_name, column_type, nullable, default_value, comment).await
+    }
+    async fn drop_column(&self, database: &str, table: &str, column_name: &str) -> Result<(), String> {
+        DbOps::drop_column(self.as_ref(), database, table, column_name).await
+    }
+    async fn modify_column(
+        &self,
+        database: &str,
+        table: &str,
+        old_name: &str,
+        new_name: &str,
+        column_type: &str,
+        nullable: bool,
+        default_value: Option<&str>,
+        comment: Option<&str>,
+    ) -> Result<(), String> {
+        DbOps::modify_column(self.as_ref(), database, table, old_name, new_name, column_type, nullable, default_value, comment).await
     }
 }
 
@@ -433,6 +489,51 @@ impl AnyDbPool {
         match self {
             AnyDbPool::MySQL(p) => p.drop_table(database, table, schema).await,
             AnyDbPool::PG(p) => p.drop_table(database, table, schema).await,
+        }
+    }
+
+    pub async fn add_column(
+        &self,
+        database: &str,
+        table: &str,
+        column_name: &str,
+        column_type: &str,
+        nullable: bool,
+        default_value: Option<&str>,
+        comment: Option<&str>,
+    ) -> Result<(), String> {
+        match self {
+            AnyDbPool::MySQL(p) => p.add_column(database, table, column_name, column_type, nullable, default_value, comment).await,
+            AnyDbPool::PG(p) => p.add_column(database, table, column_name, column_type, nullable, default_value, comment).await,
+        }
+    }
+
+    pub async fn drop_column(
+        &self,
+        database: &str,
+        table: &str,
+        column_name: &str,
+    ) -> Result<(), String> {
+        match self {
+            AnyDbPool::MySQL(p) => p.drop_column(database, table, column_name).await,
+            AnyDbPool::PG(p) => p.drop_column(database, table, column_name).await,
+        }
+    }
+
+    pub async fn modify_column(
+        &self,
+        database: &str,
+        table: &str,
+        old_name: &str,
+        new_name: &str,
+        column_type: &str,
+        nullable: bool,
+        default_value: Option<&str>,
+        comment: Option<&str>,
+    ) -> Result<(), String> {
+        match self {
+            AnyDbPool::MySQL(p) => p.modify_column(database, table, old_name, new_name, column_type, nullable, default_value, comment).await,
+            AnyDbPool::PG(p) => p.modify_column(database, table, old_name, new_name, column_type, nullable, default_value, comment).await,
         }
     }
 }

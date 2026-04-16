@@ -54,7 +54,7 @@ interface ContextMenuState {
 
 export default function ConnectionTree() {
   const { connections, connectedIds, setConnected, removeConnection } = useConnectionStore();
-  const { tabs, activeTabId, addTab, setActiveTab } = useTabStore();
+  const { tabs, activeTabId, addTab, setActiveTab, removeTab } = useTabStore();
   const [tree, setTree] = useState<TreeState>({});
   const [connecting, setConnecting] = useState<string | null>(null);
   const [ctxMenu, setCtxMenu] = useState<ContextMenuState | null>(null);

@@ -346,6 +346,91 @@ impl DbOps for MySqlPool {
         let sql = format!(r#"DROP TABLE `{}`.`{}`"#, _database, table.replace('`', ""));
         self.execute_sql(&sql).await
     }
+
+    async fn add_column(
+        &self,
+        database: &str,
+        table: &str,
+        column_name: &str,
+        column_type: &str,
+        nullable: bool,
+        default_value: Option<&str>,
+        comment: Option<&str>,
+    ) -> Result<(), String> {
+        let null_clause = if nullable { "NULL" } else { "NOT NULL" };
+        let default_clause = match default_value {
+            Some(v) if !v.is_empty() => format!(" DEFAULT '{}'", v.replace('\'', "\\'")),
+            _ => String::new(),
+        };
+        let comment_clause = match comment {
+            Some(c) if !c.is_empty() => format!(" COMMENT '{}'", c.replace('\'', "\\'")),
+            _ => String::new(),
+        };
+        let sql = format!(
+            "ALTER TABLE `{}`.`{}` ADD COLUMN `{}` {} {}{}{}",
+            database.replace('`', ""),
+            table.replace('`', ""),
+            column_name.replace('`', ""),
+            column_type,
+            null_clause,
+            default_clause,
+            comment_clause,
+        );
+        sqlx::query(&sql).execute(self).await.map_err(|e| format!("ADD COLUMN 失败: {}", e))?;
+        Ok(())
+    }
+
+    async fn drop_column(
+        &self,
+        database: &str,
+        table: &str,
+        column_name: &str,
+    ) -> Result<(), String> {
+        let sql = format!(
+            "ALTER TABLE `{}`.`{}` DROP COLUMN `{}`",
+            database.replace('`', ""),
+            table.replace('`', ""),
+            column_name.replace('`', ""),
+        );
+        sqlx::query(&sql).execute(self).await.map_err(|e| format!("DROP COLUMN 失败: {}", e))?;
+        Ok(())
+    }
+
+    async fn modify_column(
+        &self,
+        database: &str,
+        table: &str,
+        old_name: &str,
+        new_name: &str,
+        column_type: &str,
+        nullable: bool,
+        default_value: Option<&str>,
+        comment: Option<&str>,
+    ) -> Result<(), String> {
+        let null_clause = if nullable { "NULL" } else { "NOT NULL" };
+        let default_clause = match default_value {
+            Some(v) if !v.is_empty() => format!(" DEFAULT '{}'", v.replace('\'', "\\'")),
+            _ => String::new(),
+        };
+        let comment_clause = match comment {
+            Some(c) if !c.is_empty() => format!(" COMMENT '{}'", c.replace('\'', "\\'")),
+            _ => String::new(),
+        };
+        // MySQL 用 CHANGE COLUMN 同时支持改名+改类型
+        let sql = format!(
+            "ALTER TABLE `{}`.`{}` CHANGE COLUMN `{}` `{}` {} {}{}{}",
+            database.replace('`', ""),
+            table.replace('`', ""),
+            old_name.replace('`', ""),
+            new_name.replace('`', ""),
+            column_type,
+            null_clause,
+            default_clause,
+            comment_clause,
+        );
+        sqlx::query(&sql).execute(self).await.map_err(|e| format!("MODIFY COLUMN 失败: {}", e))?;
+        Ok(())
+    }
 }
 
 fn mysql_rows_to_json(rows: &[sqlx::mysql::MySqlRow]) -> Vec<Vec<serde_json::Value>> {

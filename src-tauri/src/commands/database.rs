@@ -338,3 +338,94 @@ pub async fn drop_table(
     };
     db_ops.execute_sql(&sql).await
 }
+
+/// 新增列（ALTER TABLE ... ADD COLUMN）
+#[derive(serde::Deserialize)]
+pub struct AddColumnInput {
+    pub column_name: String,
+    pub column_type: String,
+    pub nullable: bool,
+    pub default_value: Option<String>,
+    pub comment: Option<String>,
+}
+
+#[tauri::command]
+pub async fn add_column(
+    connection_id: String,
+    database: String,
+    table: String,
+    input: AddColumnInput,
+    state: State<'_, AppState>,
+) -> std::result::Result<(), String> {
+    let pool = {
+        let pools = state.pools.read().await;
+        pools.get(&connection_id).cloned().ok_or("连接未激活")?
+    };
+    let db_ops = pool.as_db_ops(&state, &connection_id, &database).await?;
+    db_ops
+        .add_column(
+            &database,
+            &table,
+            &input.column_name,
+            &input.column_type,
+            input.nullable,
+            input.default_value.as_deref(),
+            input.comment.as_deref(),
+        )
+        .await
+}
+
+/// 删除列（ALTER TABLE ... DROP COLUMN）
+#[tauri::command]
+pub async fn drop_column(
+    connection_id: String,
+    database: String,
+    table: String,
+    column_name: String,
+    state: State<'_, AppState>,
+) -> std::result::Result<(), String> {
+    let pool = {
+        let pools = state.pools.read().await;
+        pools.get(&connection_id).cloned().ok_or("连接未激活")?
+    };
+    let db_ops = pool.as_db_ops(&state, &connection_id, &database).await?;
+    db_ops.drop_column(&database, &table, &column_name).await
+}
+
+/// 修改列定义
+#[derive(serde::Deserialize)]
+pub struct ModifyColumnInput {
+    pub old_name: String,
+    pub new_name: String,
+    pub column_type: String,
+    pub nullable: bool,
+    pub default_value: Option<String>,
+    pub comment: Option<String>,
+}
+
+#[tauri::command]
+pub async fn modify_column(
+    connection_id: String,
+    database: String,
+    table: String,
+    input: ModifyColumnInput,
+    state: State<'_, AppState>,
+) -> std::result::Result<(), String> {
+    let pool = {
+        let pools = state.pools.read().await;
+        pools.get(&connection_id).cloned().ok_or("连接未激活")?
+    };
+    let db_ops = pool.as_db_ops(&state, &connection_id, &database).await?;
+    db_ops
+        .modify_column(
+            &database,
+            &table,
+            &input.old_name,
+            &input.new_name,
+            &input.column_type,
+            input.nullable,
+            input.default_value.as_deref(),
+            input.comment.as_deref(),
+        )
+        .await
+}

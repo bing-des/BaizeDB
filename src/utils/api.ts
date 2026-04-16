@@ -13,6 +13,8 @@ import type {
   RedisKeyValue,
   MigrationInput,
   MigrationProgress,
+  AddColumnInput,
+  ModifyColumnInput,
 } from '../types';
 
 export type NewConnectionInput = Omit<ConnectionConfig, 'id'>;
@@ -63,10 +65,19 @@ export const databaseApi = {
     invoke<number>('insert_table_data', { connectionId, database, table, columnValues, columnTypes }),
   /** 删除数据库（DROP DATABASE） */
   dropDatabase: (connectionId: string, databaseName: string) =>
-    invoke<u64>('drop_database', { connectionId, databaseName }),
+    invoke<number>('drop_database', { connectionId, databaseName }),
   /** 删除表（DROP TABLE） */
   dropTable: (connectionId: string, database: string, table: string, schema?: string) =>
-    invoke<u64>('drop_table', { connectionId, database, table, schema }),
+    invoke<number>('drop_table', { connectionId, database, table, schema }),
+  /** 新增列（ALTER TABLE ... ADD COLUMN） */
+  addColumn: (connectionId: string, database: string, table: string, input: AddColumnInput) =>
+    invoke<void>('add_column', { connectionId, database, table, input }),
+  /** 删除列（ALTER TABLE ... DROP COLUMN） */
+  dropColumn: (connectionId: string, database: string, table: string, columnName: string) =>
+    invoke<void>('drop_column', { connectionId, database, table, columnName }),
+  /** 修改列定义（ALTER TABLE ... MODIFY/ALTER COLUMN） */
+  modifyColumn: (connectionId: string, database: string, table: string, input: ModifyColumnInput) =>
+    invoke<void>('modify_column', { connectionId, database, table, input }),
 };
 
 export const redisApi = {

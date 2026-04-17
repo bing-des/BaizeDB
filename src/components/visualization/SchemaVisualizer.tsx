@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import cytoscape from 'cytoscape';
 import fcose from 'cytoscape-fcose';
-import { Loader2, ZoomIn, ZoomOut, Maximize, Download, RefreshCw, Save, FolderOpen, Trash2 } from 'lucide-react';
+import { Loader2, ZoomIn, ZoomOut, Maximize, Download, RefreshCw, Save, FolderOpen, Trash2, Sparkles, X } from 'lucide-react';
 
 // 注册 fcose 布局
 cytoscape.use(fcose);
@@ -9,6 +9,7 @@ import { databaseApi, llmApi } from '../../utils/api';
 import { useThemeStore } from '../../store';
 import type { DatabaseMetadata, TableMetadata, ColumnInfo, TableRelationAnalysis } from '../../types';
 import ConfirmModal from '../common/ConfirmModal';
+import HarnessAnalysisPanel from './HarnessAnalysisPanel';
 
 interface SchemaVisualizerProps {
   connectionId: string;
@@ -41,6 +42,9 @@ export default function SchemaVisualizer({ connectionId, database, schema }: Sch
   const [llmLoading, setLlmLoading] = useState(false);
   const [llmError, setLlmError] = useState<string | null>(null);
   const [hasLlmCache, setHasLlmCache] = useState(false);
+
+  // Harness 多阶段分析面板
+  const [showHarnessPanel, setShowHarnessPanel] = useState(false);
 
   // 判断当前是否为深色主题
   const isDark = theme === 'dark' || (theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
@@ -813,6 +817,12 @@ export default function SchemaVisualizer({ connectionId, database, schema }: Sch
     }
   }, [connectionId, database, schema]);
 
+  // Harness 分析完成回调
+  const handleHarnessRelationsFound = useCallback((relations: TableRelationAnalysis[]) => {
+    setLlmRelations(relations);
+    setHasLlmCache(false);
+  }, []);
+
   const saveToLocal = useCallback(async () => {
     if (!metadata) return;
     try {
@@ -989,14 +999,25 @@ export default function SchemaVisualizer({ connectionId, database, schema }: Sch
         
         <div className="h-4 w-px bg-[var(--border)]" />
         
+        {/* 旧的 LLM 分析按钮 */}
         <button 
           className="btn-ghost py-1 px-2 text-xs text-purple-400" 
           onClick={refreshLlmRelations} 
           disabled={llmLoading} 
-          title="AI 分析表关系"
+          title="AI 分析表关系（单轮）"
         >
           {llmLoading ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
           <span className="ml-1">AI 分析{hasLlmCache && ' ✓'}</span>
+        </button>
+        
+        {/* Harness 多阶段分析按钮 */}
+        <button 
+          className="btn-ghost py-1 px-2 text-xs text-pink-400 hover:text-pink-300" 
+          onClick={() => setShowHarnessPanel(true)}
+          title="Harness 多阶段 AI 分析（自动检测表关系）"
+        >
+          <Sparkles size={14} />
+          <span className="ml-1">深度分析</span>
         </button>
         
         <button className="btn-ghost py-1 px-2 text-xs" onClick={loadMetadata} disabled={loading} title="刷新元数据">
@@ -1040,6 +1061,19 @@ export default function SchemaVisualizer({ connectionId, database, schema }: Sch
 
       {/* 主内容区 */}
       <div className="flex-1 flex overflow-hidden">
+        {/* Harness 分析面板（侧边） */}
+        {showHarnessPanel && (
+          <div className="w-96 flex-shrink-0 border-r border-[var(--border)]">
+            <HarnessAnalysisPanel
+              connectionId={connectionId}
+              database={database}
+              schema={schema}
+              onClose={() => setShowHarnessPanel(false)}
+              onRelationsFound={handleHarnessRelationsFound}
+            />
+          </div>
+        )}
+        
         {/* 图区域 */}
         <div className="flex-1 relative">
           <div ref={containerRef} className={`w-full h-full ${isDark ? 'bg-[#0f172a]' : 'bg-[#f8fafc]'}`} />

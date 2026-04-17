@@ -125,6 +125,9 @@ pub struct AppState {
     pub db_pools: Arc<RwLock<HashMap<String, DbPool>>>,
     /// 连接配置存储（trait 对象，屏蔽底层实现）
     pub store: Arc<crate::store::connection_store::SqliteConnectionStore>,
+
+    /// Harness 多阶段分析会话存储
+    pub harness_store: Arc<crate::commands::harness::HarnessSessionStore>,
 }
 
 impl AppState {
@@ -136,6 +139,7 @@ impl AppState {
             pools: Arc::new(RwLock::new(HashMap::new())),
             db_pools: Arc::new(RwLock::new(HashMap::new())),
             store,
+            harness_store: Arc::new(crate::commands::harness::HarnessSessionStore::new()),
         }
     }
 }

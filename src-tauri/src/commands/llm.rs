@@ -236,7 +236,6 @@ pub async fn test_llm_config(
     api_url: String,
     model: String,
 ) -> Result<String, String> {
-    use anyhow::Context;
     use reqwest::Client;
     
     let client = Client::new();

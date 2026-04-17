@@ -236,3 +236,106 @@ export interface LlmConfig {
 export interface LlmConfigResponse {
   config: LlmConfig;
 }
+
+// ─────────── Harness 多阶段分析（按表分析）───────────
+
+/** 分析阶段（按表分析机制）- discriminated union */
+export type AnalysisStage =
+  | { stage: 'preparing' }
+  | { stage: 'analyzing'; data: string }
+  | { stage: 'completed' }
+  | { stage: 'failed'; data: string };
+
+/** 获取阶段名称 */
+export function getStageName(stage: AnalysisStage): string {
+  switch (stage.stage) {
+    case 'preparing': return '准备中';
+    case 'analyzing': return '分析中';
+    case 'completed': return '已完成';
+    case 'failed': return '失败';
+  }
+}
+
+/** 获取分析中的表名 */
+export function getAnalyzingTable(stage: AnalysisStage): string | undefined {
+  if (stage.stage === 'analyzing') {
+    return stage.data;
+  }
+  return undefined;
+}
+
+/** 会话信息 */
+export interface HarnessSessionInfo {
+  id: string;
+  connection_id: string;
+  database: string;
+  schema?: string;
+  current_stage: AnalysisStage;
+  /** 总表数 */
+  tables_total: number;
+  /** 已分析表数 */
+  tables_analyzed: number;
+  /** 当前正在分析的表名 */
+  current_table?: string;
+  /** 候选关系总数 */
+  candidates_count: number;
+  /** 进度 0.0-1.0 */
+  progress: number;
+  /** 是否完成 */
+  is_complete: boolean;
+}
+
+/** 分析步骤 */
+export interface HarnessAnalysisStep {
+  step_type: string;      // "tool_call", "tool_result", "message"
+  content: string;
+  tool_name?: string;
+  table_name?: string;
+}
+
+/** 候选关系信息 */
+export interface HarnessRelationCandidate {
+  source_table: string;
+  source_column: string;
+  target_table: string;
+  target_column: string;
+  confidence: number;
+  reason: string;
+  verified: boolean;
+}
+
+/** 候选关系摘要 */
+export interface HarnessCandidatesSummary {
+  total: number;
+  avg_confidence: number;
+}
+
+/** 候选关系响应 */
+export interface HarnessCandidatesResponse {
+  candidates: HarnessRelationCandidate[];
+  summary: HarnessCandidatesSummary;
+}
+
+/** 开始分析请求 */
+export interface HarnessStartRequest {
+  connection_id: string;
+  database: string;
+  schema?: string;
+}
+
+/** 轮次分析响应 */
+export interface HarnessTurnResponse {
+  session_id: string;
+  is_complete: boolean;
+  current_stage: AnalysisStage;
+  /** 当前正在分析的表名 */
+  current_table?: string;
+  /** 进度 0.0-1.0 */
+  progress: number;
+  new_step?: HarnessAnalysisStep;
+  candidates_count: number;
+  relations: TableRelationAnalysis[];
+  /** AI 消息（如分析完成） */
+  message?: string;
+  error?: string;
+}

@@ -21,6 +21,12 @@ import type {
   AnalyzeRelationsResponse,
   LlmConfig,
   LlmConfigResponse,
+  // Harness types
+  HarnessSessionInfo,
+  HarnessAnalysisStep,
+  HarnessCandidatesResponse,
+  HarnessStartRequest,
+  HarnessTurnResponse,
 } from '../types';
 
 export type NewConnectionInput = Omit<ConnectionConfig, 'id'>;
@@ -157,4 +163,28 @@ export const migrationApi = {
     listen<MigrationProgress>('migration-progress', (event) => {
       callback(event.payload);
     }),
+};
+
+export const harnessApi = {
+  /** 开始新的分析会话 */
+  startAnalysis: (request: HarnessStartRequest) =>
+    invoke<HarnessSessionInfo>('harness_start_analysis', { request }),
+  /** 执行一轮分析 */
+  runTurn: (sessionId: string) =>
+    invoke<HarnessTurnResponse>('harness_run_turn', { sessionId }),
+  /** 获取会话信息 */
+  getSessionInfo: (sessionId: string) =>
+    invoke<HarnessSessionInfo>('harness_get_session_info', { sessionId }),
+  /** 获取候选关系列表 */
+  getCandidates: (sessionId: string) =>
+    invoke<HarnessCandidatesResponse>('harness_get_candidates', { sessionId }),
+  /** 获取分析步骤历史 */
+  getSteps: (sessionId: string) =>
+    invoke<HarnessAnalysisStep[]>('harness_get_steps', { sessionId }),
+  /** 删除分析会话 */
+  deleteSession: (sessionId: string) =>
+    invoke<void>('harness_delete_session', { sessionId }),
+  /** 获取所有活跃会话 */
+  listSessions: () =>
+    invoke<HarnessSessionInfo[]>('harness_list_sessions'),
 };

@@ -1,9 +1,9 @@
 use serde::{Deserialize, Serialize};
 use anyhow::{Result, Context};
 use crate::store::TableRelationAnalysis;
-use crate::store::connection_store::{TableSchema, ColumnMeta};
+use crate::store::connection_store::TableSchema;
 
-/// LLM 分析请求
+// LLM 分析请求
 #[derive(Debug, Clone, Serialize)]
 struct LlmRequest {
     model: String,

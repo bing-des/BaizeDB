@@ -1,5 +1,7 @@
 pub mod connection_store;
 pub mod llm_analyzer;
+pub mod harness_analyzer;
+pub mod harness_tools;
 
 pub use connection_store::{
     ConnectionStore, 
@@ -9,3 +11,4 @@ pub use connection_store::{
     LlmConfig,
 };
 pub use llm_analyzer::LlmAnalyzer;
+pub use harness_tools::ToolResult;

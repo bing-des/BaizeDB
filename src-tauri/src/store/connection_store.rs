@@ -299,19 +299,30 @@ impl SqliteConnectionStore {
         let mut tx = pool.begin().await.map_err(|e| format!("开始事务失败: {}", e))?;
 
         for relation in relations {
+            // 先删除已存在的相同关系（基于复合唯一键）
+            sqlx::query(
+                r#"
+                DELETE FROM table_relations 
+                WHERE connection_id = ?1 
+                  AND database = ?2 
+                  AND source_table = ?3 
+                  AND source_column = ?4
+                "#
+            )
+            .bind(connection_id)
+            .bind(database)
+            .bind(&relation.source_table)
+            .bind(&relation.source_column)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| format!("删除旧关系失败: {}", e))?;
+
+            // 插入新关系
             sqlx::query(
                 r#"
                 INSERT INTO table_relations 
                 (connection_id, database, source_table, source_column, target_table, target_column, relation_type, confidence, reason, updated_at)
                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, CURRENT_TIMESTAMP)
-                ON CONFLICT(id) 
-                DO UPDATE SET
-                    target_table = excluded.target_table,
-                    target_column = excluded.target_column,
-                    relation_type = excluded.relation_type,
-                    confidence = excluded.confidence,
-                    reason = excluded.reason,
-                    updated_at = CURRENT_TIMESTAMP
                 "#
             )
             .bind(connection_id)

@@ -1,6 +1,91 @@
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import { X, Plus, Trash2, KeyRound, Loader2 } from 'lucide-react';
 import type { CreateTableColumn, CreateTableInput } from '../../types';
+
+// ──────────────── SQL 预览组件（区分 PG/MySQL） ────────────────
+interface SqlPreviewProps {
+  isPostgres: boolean;
+  fullName: string;
+  tableName: string;
+  schema?: string;
+  tableComment: string;
+  columns: CreateTableColumn[];
+}
+
+function SqlPreview({ isPostgres, fullName, tableName, schema, tableComment, columns }: SqlPreviewProps) {
+  const sql = useMemo(() => {
+    const validColumns = columns.filter(c => c.name.trim());
+    if (validColumns.length === 0) return '';
+
+    if (isPostgres) {
+      // PostgreSQL 语法
+      const lines: string[] = [];
+      
+      // 1. CREATE TABLE
+      const colDefs = validColumns.map(c => {
+        let def = `  ${c.name} ${c.data_type}`;
+        if (!c.nullable) def += ' NOT NULL';
+        if (c.default_value) def += ` DEFAULT ${c.default_value}`;
+        return def;
+      });
+      
+      // 主键约束（单独一行）
+      const pkColumns = validColumns.filter(c => c.is_primary_key).map(c => c.name);
+      if (pkColumns.length > 0) {
+        colDefs.push(`  CONSTRAINT ${tableName}_pkey PRIMARY KEY (${pkColumns.join(', ')})`);
+      }
+      
+      lines.push(`CREATE TABLE ${fullName} (`);
+      lines.push(colDefs.join(',\n'));
+      lines.push(');');
+      
+      // 2. 列注释
+      validColumns.forEach(c => {
+        if (c.comment) {
+          lines.push(`\nCOMMENT ON COLUMN ${fullName}.${c.name} IS '${c.comment}';`);
+        }
+      });
+      
+      // 3. 表注释
+      if (tableComment) {
+        lines.push(`\nCOMMENT ON TABLE ${fullName} IS '${tableComment}';`);
+      }
+      
+      return lines.join('\n');
+    } else {
+      // MySQL 语法
+      const lines: string[] = [];
+      
+      // 列定义（包含主键）
+      const colDefs = validColumns.map(c => {
+        let def = `  ${c.name} ${c.data_type}`;
+        if (!c.nullable) def += ' NOT NULL';
+        if (c.default_value) def += ` DEFAULT ${c.default_value}`;
+        if (c.comment) def += ` COMMENT '${c.comment}'`;
+        if (c.is_primary_key) def += ' PRIMARY KEY';
+        return def;
+      });
+      
+      let createSql = `CREATE TABLE ${fullName} (\n${colDefs.join(',\n')}\n)`;
+      
+      // 表注释（MySQL 在 CREATE TABLE 后加 COMMENT）
+      if (tableComment) {
+        createSql += `\nCOMMENT = '${tableComment}'`;
+      }
+      
+      createSql += ';';
+      lines.push(createSql);
+      
+      return lines.join('\n');
+    }
+  }, [isPostgres, fullName, tableName, schema, tableComment, columns]);
+
+  return (
+    <pre className="text-[10px] font-mono text-[var(--text-secondary)] whitespace-pre-wrap">
+      {sql}
+    </pre>
+  );
+}
 
 const MYSQL_TYPES = ['INT','BIGINT','VARCHAR(255)','VARCHAR(100)','TEXT','DATETIME','TIMESTAMP','DATE','DECIMAL(10,2)','BOOLEAN','JSON'];
 const PG_TYPES = ['integer','bigint','varchar(255)','varchar(100)','text','timestamp','timestamptz','date','numeric(10,2)','boolean','json','jsonb','serial','bigserial'];
@@ -223,12 +308,20 @@ export default function CreateTableModal({ isOpen, isPostgres, database, schema,
           {/* SQL 预览 */}
           {tableName && columns.some(c => c.name) && (
             <div className="p-3 bg-[var(--bg-secondary)] rounded-md">
-              <div className="text-xs text-[var(--text-muted)] mb-1">SQL 预览</div>
-              <pre className="text-[10px] font-mono text-[var(--text-secondary)] whitespace-pre-wrap">
-                {`CREATE TABLE ${fullName} (
-${columns.filter(c => c.name).map((c, i) => `  ${c.name} ${c.data_type}${!c.nullable ? ' NOT NULL' : ''}${c.default_value ? ` DEFAULT ${c.default_value}` : ''}${c.is_primary_key ? ' PRIMARY KEY' : ''}${i < columns.filter(c2 => c2.name).length - 1 ? ',' : ''}`).join('\n')}
-)`}
-              </pre>
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-xs text-[var(--text-muted)]">SQL 预览</span>
+                <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--bg-tertiary)] text-[var(--text-muted)]">
+                  {isPostgres ? 'PostgreSQL' : 'MySQL'}
+                </span>
+              </div>
+              <SqlPreview 
+                isPostgres={isPostgres} 
+                fullName={fullName} 
+                tableName={tableName}
+                schema={schema}
+                tableComment={tableComment}
+                columns={columns}
+              />
             </div>
           )}
         </div>

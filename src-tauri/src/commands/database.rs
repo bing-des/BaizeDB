@@ -1,6 +1,8 @@
 use crate::state::AppState;
-use serde::Serialize;
-use tauri::State;
+use crate::store::TableRelationAnalysis;
+use serde::{Serialize, Deserialize};
+use tauri::{State, Manager};
+use sqlx::Row;
 
 // ====== 前端兼容的旧结构体（保持 API 不变）======
 
@@ -23,7 +25,7 @@ pub struct TableInfo {
     pub row_count: Option<i64>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ColumnInfo {
     pub name: String,
     pub data_type: String,
@@ -560,4 +562,338 @@ pub async fn modify_column(
             input.comment.as_deref(),
         )
         .await
+}
+
+// ====== 数据库可视化：获取完整元数据 ======
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ForeignKeyInfo {
+    pub column_name: String,
+    pub referenced_table: String,
+    pub referenced_column: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TableMetadata {
+    pub name: String,
+    pub comment: Option<String>,
+    pub columns: Vec<ColumnInfo>,
+    pub foreign_keys: Vec<ForeignKeyInfo>,
+    pub referenced_by: Vec<ReferencedByInfo>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ReferencedByInfo {
+    pub table_name: String,
+    pub column_name: String,
+    pub referenced_column: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DatabaseMetadata {
+    pub database: String,
+    pub schema: Option<String>,
+    pub tables: Vec<TableMetadata>,
+    /// LLM 分析的表关系（虚线显示）
+    pub llm_relations: Vec<TableRelationAnalysis>,
+}
+
+/// 获取数据库完整元数据（用于可视化）
+#[tauri::command]
+pub async fn get_database_metadata(
+    connection_id: String,
+    database: String,
+    schema: Option<String>,
+    state: State<'_, AppState>,
+) -> std::result::Result<DatabaseMetadata, String> {
+    let pool = {
+        let pools = state.pools.read().await;
+        pools.get(&connection_id).cloned().ok_or("连接未激活")?
+    };
+    let db_ops = pool.as_db_ops(&state, &connection_id, &database).await?;
+    let is_pg = db_ops.is_postgres();
+    
+    // 1. 获取所有表
+    let tables_meta = db_ops.list_tables(&database, schema.as_deref()).await?;
+    
+    let mut tables: Vec<TableMetadata> = Vec::new();
+    
+    for table_meta in tables_meta {
+        let table_name = &table_meta.name;
+        
+        // 2. 获取表的列信息
+        let cols = db_ops.list_columns(&database, table_name).await?;
+        let columns: Vec<ColumnInfo> = cols
+            .into_iter()
+            .map(|c| ColumnInfo {
+                name: c.name,
+                data_type: c.data_type,
+                nullable: c.nullable,
+                key: c.key,
+                default_value: c.default_value,
+                comment: c.comment,
+            })
+            .collect();
+        
+        // 3. 获取外键信息（直接在连接上执行查询）
+        let fks = match &pool {
+            crate::state::DbPool::MySQL(mysql_pool) => {
+                get_mysql_foreign_keys(mysql_pool, &database, table_name).await?
+            }
+            crate::state::DbPool::PostgreSQL(pg_pool) => {
+                get_postgres_foreign_keys(pg_pool, schema.as_deref().unwrap_or("public"), table_name).await?
+            }
+            crate::state::DbPool::Redis(_) => Vec::new(),
+        };
+        
+        tables.push(TableMetadata {
+            name: table_name.clone(),
+            comment: None, // 表注释需要额外查询，暂时留空
+            columns,
+            foreign_keys: fks,
+            referenced_by: Vec::new(), // 稍后填充
+        });
+    }
+    
+    // 4. 填充被引用关系（哪些表引用了当前表）
+    let mut table_refs: std::collections::HashMap<String, Vec<ReferencedByInfo>> = std::collections::HashMap::new();
+    for table in &tables {
+        for fk in &table.foreign_keys {
+            let ref_table = fk.referenced_table.clone();
+            let ref_info = ReferencedByInfo {
+                table_name: table.name.clone(),
+                column_name: fk.column_name.clone(),
+                referenced_column: fk.referenced_column.clone(),
+            };
+            table_refs.entry(ref_table).or_default().push(ref_info);
+        }
+    }
+    
+    // 将引用关系填充到对应表
+    for table in &mut tables {
+        if let Some(refs) = table_refs.get(&table.name) {
+            table.referenced_by = refs.clone();
+        }
+    }
+    
+    // 5. 获取 LLM 分析的表关系（如果存在）
+    let llm_relations = state.store.get_relations(&connection_id, &database).await.unwrap_or_default();
+    
+    Ok(DatabaseMetadata {
+        database,
+        schema,
+        tables,
+        llm_relations,
+    })
+}
+
+async fn get_postgres_foreign_keys(
+    pool: &sqlx::PgPool,
+    schema: &str,
+    table: &str,
+) -> Result<Vec<ForeignKeyInfo>, String> {
+    let sql = r#"
+        SELECT
+            kcu.column_name,
+            ccu.table_name AS referenced_table,
+            ccu.column_name AS referenced_column
+        FROM information_schema.table_constraints tc
+        JOIN information_schema.key_column_usage kcu
+            ON tc.constraint_name = kcu.constraint_name
+            AND tc.table_schema = kcu.table_schema
+        JOIN information_schema.constraint_column_usage ccu
+            ON ccu.constraint_name = tc.constraint_name
+            AND ccu.table_schema = tc.table_schema
+        WHERE tc.constraint_type = 'FOREIGN KEY'
+            AND tc.table_schema = $1
+            AND tc.table_name = $2
+    "#;
+    
+    let rows = sqlx::query(sql)
+        .bind(schema)
+        .bind(table)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    
+    let mut fks = Vec::new();
+    
+    for row in rows {
+        let col: Option<String> = row.try_get("column_name").ok();
+        let ref_table: Option<String> = row.try_get("referenced_table").ok();
+        let ref_col: Option<String> = row.try_get("referenced_column").ok();
+        
+        if let (Some(c), Some(rt), Some(rc)) = (col, ref_table, ref_col) {
+            fks.push(ForeignKeyInfo {
+                column_name: c,
+                referenced_table: rt,
+                referenced_column: rc,
+            });
+        }
+    }
+    
+    Ok(fks)
+}
+
+async fn get_mysql_foreign_keys(
+    pool: &sqlx::MySqlPool,
+    database: &str,
+    table: &str,
+) -> Result<Vec<ForeignKeyInfo>, String> {
+    let sql = r#"
+        SELECT
+            kcu.COLUMN_NAME AS column_name,
+            kcu.REFERENCED_TABLE_NAME AS referenced_table,
+            kcu.REFERENCED_COLUMN_NAME AS referenced_column
+        FROM information_schema.KEY_COLUMN_USAGE kcu
+        WHERE kcu.TABLE_SCHEMA = ?
+            AND kcu.TABLE_NAME = ?
+            AND kcu.REFERENCED_TABLE_NAME IS NOT NULL
+    "#;
+    
+    let rows = sqlx::query(sql)
+        .bind(database)
+        .bind(table)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    
+    let mut fks = Vec::new();
+    
+    for row in rows {
+        let col: Option<String> = row.try_get("column_name").ok();
+        let ref_table: Option<String> = row.try_get("referenced_table").ok();
+        let ref_col: Option<String> = row.try_get("referenced_column").ok();
+        
+        if let (Some(c), Some(rt), Some(rc)) = (col, ref_table, ref_col) {
+            fks.push(ForeignKeyInfo {
+                column_name: c,
+                referenced_table: rt,
+                referenced_column: rc,
+            });
+        }
+    }
+    
+    Ok(fks)
+}
+
+// ====== 可视化元数据本地存储 ======
+
+/// 保存可视化元数据到本地文件
+#[tauri::command]
+pub async fn save_visualization_metadata(
+    connection_id: String,
+    database: String,
+    schema: Option<String>,
+    metadata: DatabaseMetadata,
+    app_handle: tauri::AppHandle,
+) -> std::result::Result<String, String> {
+    let app_dir = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("无法获取应用数据目录: {}", e))?;
+    
+    let viz_dir = app_dir.join("visualizations");
+    std::fs::create_dir_all(&viz_dir).map_err(|e| format!("创建目录失败: {}", e))?;
+    
+    // 文件名：connection_id_database_schema.json
+    let filename = format!(
+        "{}_{}_{}.json",
+        connection_id,
+        database,
+        schema.as_deref().unwrap_or("default")
+    );
+    let file_path = viz_dir.join(&filename);
+    
+    let json = serde_json::to_string_pretty(&metadata).map_err(|e| format!("序列化失败: {}", e))?;
+    std::fs::write(&file_path, json).map_err(|e| format!("写入文件失败: {}", e))?;
+    
+    Ok(file_path.to_string_lossy().to_string())
+}
+
+/// 从本地文件加载可视化元数据
+#[tauri::command]
+pub async fn load_visualization_metadata(
+    connection_id: String,
+    database: String,
+    schema: Option<String>,
+    app_handle: tauri::AppHandle,
+) -> std::result::Result<Option<DatabaseMetadata>, String> {
+    let app_dir = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("无法获取应用数据目录: {}", e))?;
+    
+    let filename = format!(
+        "{}_{}_{}.json",
+        connection_id,
+        database,
+        schema.as_deref().unwrap_or("default")
+    );
+    let file_path = app_dir.join("visualizations").join(&filename);
+    
+    if !file_path.exists() {
+        return Ok(None);
+    }
+    
+    let json = std::fs::read_to_string(&file_path).map_err(|e| format!("读取文件失败: {}", e))?;
+    let metadata: DatabaseMetadata = serde_json::from_str(&json).map_err(|e| format!("解析失败: {}", e))?;
+    
+    Ok(Some(metadata))
+}
+
+/// 删除本地存储的可视化元数据
+#[tauri::command]
+pub async fn delete_visualization_metadata(
+    connection_id: String,
+    database: String,
+    schema: Option<String>,
+    app_handle: tauri::AppHandle,
+) -> std::result::Result<(), String> {
+    let app_dir = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("无法获取应用数据目录: {}", e))?;
+    
+    let filename = format!(
+        "{}_{}_{}.json",
+        connection_id,
+        database,
+        schema.as_deref().unwrap_or("default")
+    );
+    let file_path = app_dir.join("visualizations").join(&filename);
+    
+    if file_path.exists() {
+        std::fs::remove_file(&file_path).map_err(|e| format!("删除文件失败: {}", e))?;
+    }
+    
+    Ok(())
+}
+
+/// 列出所有已保存的可视化元数据
+#[tauri::command]
+pub async fn list_saved_visualizations(
+    app_handle: tauri::AppHandle,
+) -> std::result::Result<Vec<String>, String> {
+    let app_dir = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("无法获取应用数据目录: {}", e))?;
+    
+    let viz_dir = app_dir.join("visualizations");
+    if !viz_dir.exists() {
+        return Ok(Vec::new());
+    }
+    
+    let mut files = Vec::new();
+    for entry in std::fs::read_dir(&viz_dir).map_err(|e| format!("读取目录失败: {}", e))? {
+        let entry = entry.map_err(|e| format!("读取条目失败: {}", e))?;
+        if let Some(name) = entry.file_name().to_str() {
+            if name.ends_with(".json") {
+                files.push(name.to_string());
+            }
+        }
+    }
+    
+    Ok(files)
 }

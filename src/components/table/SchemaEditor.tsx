@@ -165,9 +165,9 @@ export default function SchemaEditor({ connectionId, database, table, isPostgres
     let result = [...columns];
     for (const op of pendingOps) {
       switch (op.type) {
-        case 'add': result = [...result, { name: op.data.column_name, data_type: op.data.column_type, nullable: op.data.nullable, key: '', default_value: op.data.default_value || null, comment: op.data.comment || null }]; break;
+        case 'add': result = [...result, { name: op.data.column_name, data_type: op.data.column_type, nullable: op.data.nullable, key: '', default_value: op.data.default_value ?? undefined, comment: op.data.comment ?? undefined }]; break;
         case 'drop': result = result.filter(c => c.name !== op.columnName); break;
-        case 'modify': result = result.map(c => c.name === op.oldColumn.name ? { ...c, name: op.newData.new_name, data_type: op.newData.column_type, nullable: op.newData.nullable, default_value: op.newData.default_value || null, comment: op.newData.comment || null } : c); break;
+        case 'modify': result = result.map(c => c.name === op.oldColumn.name ? { ...c, name: op.newData.new_name, data_type: op.newData.column_type, nullable: op.newData.nullable, default_value: op.newData.default_value ?? undefined, comment: op.newData.comment ?? undefined } : c); break;
       }
     }
     return result;

@@ -76,10 +76,11 @@ export interface RedisKeyValue {
 export interface Tab {
   id: string;
   title: string;
-  type: 'query' | 'table' | 'redis-key';
+  type: 'query' | 'table' | 'redis-key' | 'visualization' | 'chartdb';
   connectionId: string;
   database?: string;
   table?: string;
+  schema?: string;
   content?: string;
   redisDbIndex?: number;
   redisKey?: string;
@@ -168,4 +169,70 @@ export interface CreateTableInput {
   table_name: string;
   columns: CreateTableColumn[];
   comment?: string;
+}
+
+// ─────────── 数据库可视化 ───────────
+
+/** 外键信息 */
+export interface ForeignKeyInfo {
+  column_name: string;
+  referenced_table: string;
+  referenced_column: string;
+}
+
+/** 被引用信息（哪些表引用了当前表） */
+export interface ReferencedByInfo {
+  table_name: string;
+  column_name: string;
+  referenced_column: string;
+}
+
+/** 表元数据（用于可视化） */
+export interface TableMetadata {
+  name: string;
+  comment?: string;
+  columns: ColumnInfo[];
+  foreign_keys: ForeignKeyInfo[];
+  referenced_by: ReferencedByInfo[];
+}
+
+/** 数据库元数据（用于可视化） */
+export interface DatabaseMetadata {
+  database: string;
+  schema?: string;
+  tables: TableMetadata[];
+  /** LLM 分析的表关系（虚线显示） */
+  llm_relations: TableRelationAnalysis[];
+}
+
+// ─────────── LLM 表关系分析 ───────────
+
+/** 表关系分析结果 */
+export interface TableRelationAnalysis {
+  source_table: string;
+  source_column: string;
+  target_table: string;
+  target_column: string;
+  relation_type: string; // "one_to_one", "one_to_many", "many_to_many"
+  confidence: number; // 0.0 - 1.0
+  reason: string;
+}
+
+/** LLM 分析响应 */
+export interface AnalyzeRelationsResponse {
+  relations: TableRelationAnalysis[];
+  from_cache: boolean;
+}
+
+/** LLM 配置 */
+export interface LlmConfig {
+  api_key: string;
+  api_url: string;
+  model: string;
+  enabled: boolean;
+}
+
+/** LLM 配置响应 */
+export interface LlmConfigResponse {
+  config: LlmConfig;
 }

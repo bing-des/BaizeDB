@@ -42,6 +42,11 @@ fn main() {
             commands::database::add_column,
             commands::database::drop_column,
             commands::database::modify_column,
+            commands::database::get_database_metadata,
+            commands::database::save_visualization_metadata,
+            commands::database::load_visualization_metadata,
+            commands::database::delete_visualization_metadata,
+            commands::database::list_saved_visualizations,
             commands::query::execute_query,
             commands::query::execute_query_paged,
             commands::redis::redis_list_dbs,
@@ -50,6 +55,13 @@ fn main() {
             commands::redis::redis_set_key,
             commands::redis::redis_del_key,
             commands::migration::start_migration_v2,
+            commands::llm::get_table_relations,
+            commands::llm::refresh_table_relations,
+            commands::llm::has_relation_analysis,
+            commands::llm::clear_relation_analysis,
+            commands::llm::get_llm_config,
+            commands::llm::save_llm_config,
+            commands::llm::test_llm_config,
         ])
         .setup(|app| {
             let window = app.get_webview_window("main").unwrap();

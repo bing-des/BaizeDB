@@ -31,6 +31,8 @@ async-trait = "0.1"
 base64 = "0.22"
 ipnet = "2.10"
 macaddr = "1.0"
+reqwest = { version = "0.12", features = ["json"] }
+dirs = "5"
 
 [profile.dev]
 incremental = true

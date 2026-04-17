@@ -248,6 +248,30 @@ export default function ConnectionTree() {
     });
   };
 
+  const openVisualization = (conn: ConnectionConfig, db: string, schema?: string) => {
+    const title = schema ? `可视化·${db}.${schema}` : `可视化·${db}`;
+    addTab({
+      id: uuidv4(),
+      title,
+      type: 'visualization',
+      connectionId: conn.id,
+      database: db,
+      schema,
+    });
+  };
+
+  const openChartDB = (conn: ConnectionConfig, db: string, schema?: string) => {
+    const title = schema ? `ChartDB·${db}.${schema}` : `ChartDB·${db}`;
+    addTab({
+      id: uuidv4(),
+      title,
+      type: 'chartdb',
+      connectionId: conn.id,
+      database: db,
+      schema,
+    });
+  };
+
   const openTable = (conn: ConnectionConfig, db: string, table: string, schema?: string) => {
     // PG 的表名需要带 schema 前缀（如 "platform_app.app_role"），否则后续查询找不到表
     const fullTableName = schema && schema !== 'public' ? `${schema}.${table}` : table;
@@ -427,6 +451,16 @@ export default function ConnectionTree() {
         onClick: () => setCreateTableState({ conn, dbName }),
       },
       {
+        label: '查看可视化',
+        icon: <Eye size={13} />,
+        onClick: () => openVisualization(conn, dbName),
+      },
+      {
+        label: 'ChartDB 可视化',
+        icon: <Eye size={13} />,
+        onClick: () => openChartDB(conn, dbName),
+      },
+      {
         label: '刷新',
         icon: <RefreshCw size={13} />,
         onClick: () => handleRefreshDb(conn, dbName),
@@ -455,6 +489,16 @@ export default function ConnectionTree() {
         label: '新建表',
         icon: <Plus size={13} />,
         onClick: () => setCreateTableState({ conn, dbName, schema: schemaName }),
+      },
+      {
+        label: '查看可视化',
+        icon: <Eye size={13} />,
+        onClick: () => openVisualization(conn, dbName, schemaName),
+      },
+      {
+        label: 'ChartDB 可视化',
+        icon: <Eye size={13} />,
+        onClick: () => openChartDB(conn, dbName, schemaName),
       },
       {
         label: '刷新',

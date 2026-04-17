@@ -1,9 +1,11 @@
 import { useState, useCallback } from 'react';
-import { X, TerminalSquare, Table2, Key, RefreshCw, Trash2, PanelRightClose, PanelsTopLeft, CircleX } from 'lucide-react';
+import { X, TerminalSquare, Table2, Key, Eye, RefreshCw, Trash2, PanelRightClose, PanelsTopLeft, CircleX } from 'lucide-react';
 import { useTabStore } from '../../store';
 import QueryEditor from './QueryEditor';
 import TableViewer from '../table/TableViewer';
 import RedisKeyViewer from '../redis/RedisKeyViewer';
+import SchemaVisualizer from '../visualization/SchemaVisualizer';
+import ChartDBVisualizer from '../visualization/ChartDBVisualizer';
 import ContextMenu from '../common/ContextMenu';
 
 /** 自定义刷新事件，子组件通过 dispatchEvent 触发 */
@@ -91,6 +93,8 @@ export default function TabsArea() {
               <TerminalSquare size={12} className="text-brand-400" />
             ) : tab.type === 'redis-key' ? (
               <Key size={12} className="text-red-400" />
+            ) : tab.type === 'visualization' ? (
+              <Eye size={12} className="text-green-400" />
             ) : (
               <Table2 size={12} className="text-purple-400" />
             )}
@@ -139,7 +143,19 @@ function TabContent({ tab, active }: { tab: import('../../types').Tab; active: b
         ? <QueryEditor tab={tab} />
         : tab.type === 'redis-key'
           ? <RedisKeyViewer tab={tab} />
-          : <TableViewer tab={tab} />}
+          : tab.type === 'visualization'
+            ? <SchemaVisualizer 
+                connectionId={tab.connectionId} 
+                database={tab.database!} 
+                schema={tab.schema}
+              />
+            : tab.type === 'chartdb'
+              ? <ChartDBVisualizer 
+                  connectionId={tab.connectionId} 
+                  database={tab.database!} 
+                  schema={tab.schema}
+                />
+              : <TableViewer tab={tab} />}
     </div>
   );
 }

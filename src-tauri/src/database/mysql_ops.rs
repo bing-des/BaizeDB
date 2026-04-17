@@ -568,3 +568,5 @@ fn bind_json_value_to_mysql_args(args: &mut sqlx::mysql::MySqlArguments, val: &s
         }
     }
 }
+
+

@@ -16,6 +16,11 @@ import type {
   AddColumnInput,
   ModifyColumnInput,
   CreateTableInput,
+  DatabaseMetadata,
+  TableRelationAnalysis,
+  AnalyzeRelationsResponse,
+  LlmConfig,
+  LlmConfigResponse,
 } from '../types';
 
 export type NewConnectionInput = Omit<ConnectionConfig, 'id'>;
@@ -82,6 +87,21 @@ export const databaseApi = {
   /** 修改列定义（ALTER TABLE ... MODIFY/ALTER COLUMN） */
   modifyColumn: (connectionId: string, database: string, table: string, input: ModifyColumnInput) =>
     invoke<void>('modify_column', { connectionId, database, table, input }),
+  /** 获取数据库完整元数据（用于可视化） */
+  getDatabaseMetadata: (connectionId: string, database: string, schema?: string) =>
+    invoke<DatabaseMetadata>('get_database_metadata', { connectionId, database, schema }),
+  /** 保存可视化元数据到本地文件 */
+  saveVisualizationMetadata: (connectionId: string, database: string, schema: string | undefined, metadata: DatabaseMetadata) =>
+    invoke<string>('save_visualization_metadata', { connectionId, database, schema, metadata }),
+  /** 从本地文件加载可视化元数据 */
+  loadVisualizationMetadata: (connectionId: string, database: string, schema?: string) =>
+    invoke<DatabaseMetadata | null>('load_visualization_metadata', { connectionId, database, schema }),
+  /** 删除本地保存的可视化元数据 */
+  deleteVisualizationMetadata: (connectionId: string, database: string, schema?: string) =>
+    invoke<void>('delete_visualization_metadata', { connectionId, database, schema }),
+  /** 列出所有已保存的可视化文件 */
+  listSavedVisualizations: () =>
+    invoke<string[]>('list_saved_visualizations'),
 };
 
 export const redisApi = {
@@ -102,6 +122,30 @@ export const queryApi = {
     invoke<QueryResult>('execute_query', { connectionId, sql, database: database ?? null }),
   executePaged: (connectionId: string, sql: string, page: number, pageSize: number, database?: string) =>
     invoke<QueryResult>('execute_query_paged', { input: { connectionId, sql, page, pageSize, database: database ?? null } }),
+};
+
+export const llmApi = {
+  /** 获取表关系分析（优先从 SQLite 读取，不存在则调用 LLM） */
+  getTableRelations: (connectionId: string, database: string, schema?: string) =>
+    invoke<AnalyzeRelationsResponse>('get_table_relations', { connectionId, database, schema }),
+  /** 强制刷新 - 重新调用 LLM 分析 */
+  refreshTableRelations: (connectionId: string, database: string, schema?: string) =>
+    invoke<AnalyzeRelationsResponse>('refresh_table_relations', { connectionId, database, schema }),
+  /** 检查是否有缓存的分析结果 */
+  hasRelationAnalysis: (connectionId: string, database: string) =>
+    invoke<boolean>('has_relation_analysis', { connectionId, database }),
+  /** 删除分析结果 */
+  clearRelationAnalysis: (connectionId: string, database: string) =>
+    invoke<void>('clear_relation_analysis', { connectionId, database }),
+  /** 获取 LLM 配置 */
+  getConfig: () =>
+    invoke<LlmConfigResponse>('get_llm_config'),
+  /** 保存 LLM 配置 */
+  saveConfig: (config: LlmConfig) =>
+    invoke<void>('save_llm_config', { req: config }),
+  /** 测试 LLM 配置 */
+  testConfig: (config: LlmConfig) =>
+    invoke<string>('test_llm_config', { apiKey: config.api_key, apiUrl: config.api_url, model: config.model }),
 };
 
 export const migrationApi = {

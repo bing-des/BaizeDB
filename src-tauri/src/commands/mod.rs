@@ -3,3 +3,4 @@ pub mod database;
 pub mod query;
 pub mod redis;
 pub mod migration;
+pub mod llm;

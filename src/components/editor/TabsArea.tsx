@@ -5,7 +5,7 @@ import QueryEditor from './QueryEditor';
 import TableViewer from '../table/TableViewer';
 import RedisKeyViewer from '../redis/RedisKeyViewer';
 import SchemaVisualizer from '../visualization/SchemaVisualizer';
-import ChartDBVisualizer from '../visualization/ChartDBVisualizer';
+// import ChartDBVisualizer from '../visualization/ChartDBVisualizer';
 import ContextMenu from '../common/ContextMenu';
 
 /** 自定义刷新事件，子组件通过 dispatchEvent 触发 */
@@ -149,12 +149,12 @@ function TabContent({ tab, active }: { tab: import('../../types').Tab; active: b
                 database={tab.database!} 
                 schema={tab.schema}
               />
-            : tab.type === 'chartdb'
-              ? <ChartDBVisualizer 
-                  connectionId={tab.connectionId} 
-                  database={tab.database!} 
-                  schema={tab.schema}
-                />
+            // : tab.type === 'chartdb'
+            //   ? <ChartDBVisualizer 
+            //       connectionId={tab.connectionId} 
+            //       database={tab.database!} 
+            //       schema={tab.schema}
+            //     />
               : <TableViewer tab={tab} />}
     </div>
   );

@@ -455,11 +455,11 @@ export default function ConnectionTree() {
         icon: <Eye size={13} />,
         onClick: () => openVisualization(conn, dbName),
       },
-      {
-        label: 'ChartDB 可视化',
-        icon: <Eye size={13} />,
-        onClick: () => openChartDB(conn, dbName),
-      },
+      // {
+      //   label: 'ChartDB 可视化',
+      //   icon: <Eye size={13} />,
+      //   onClick: () => openChartDB(conn, dbName),
+      // },
       {
         label: '刷新',
         icon: <RefreshCw size={13} />,

@@ -564,6 +564,8 @@ impl HarnessAnalyzer {
         let tools = crate::store::harness_tools::get_tool_definitions();
 
         // 调用 LLM
+        log::info!("[LLM 请求] 表: {} | 轮次: {} | 消息数: {} | 工具数: {} | 最新消息: {}", 
+            sub_session.table_name, sub_session.turns_used, messages.len(), tools.len(), messages.last().map(|m| m.content.clone()).unwrap_or_default());
         let response = self.call_llm(&messages, &tools).await?;
         log::info!("[LLM 响应] 表: {} | 轮次: {} | 内容: {}", 
             sub_session.table_name, sub_session.turns_used, response.choices.first().map(|c| c.message.content.clone()).unwrap_or_default());
@@ -619,10 +621,20 @@ impl HarnessAnalyzer {
                 // 注意：verify_foreign_key 执行成功后，让LLM根据提示词决定是否继续验证其他候选
                 // 不再自动结束，确保一张表的多个候选外键都能被验证
                 
-        // 强制结束条件：达到最大轮次（增加轮次以支持多外键验证）
+        // 强制结束条件1：达到最大轮次
         if sub_session.turns_used >= 20 {
             log::info!("[LLM 强制结束] 表: {} 达到最大轮次 ({}轮)，结束分析", 
                 sub_session.table_name, sub_session.turns_used);
+            sub_session.completed = true;
+            return self.finish_sub_session(sub_session, parent_session);
+        }
+
+        // 强制结束条件2：Finalization 阶段且所有候选已验证，但LLM还在调用工具
+        let current_phase = HarnessAnalyzer::detect_phase(sub_session);
+        let unverified_count = sub_session.candidates.iter().filter(|c| !c.verified).count();
+        if matches!(current_phase, AnalysisPhase::Finalization) && unverified_count == 0 {
+            log::info!("[LLM 强制结束] 表: {} 在Finalization阶段且所有候选已验证，强制结束", 
+                sub_session.table_name);
             sub_session.completed = true;
             return self.finish_sub_session(sub_session, parent_session);
         }
@@ -656,19 +668,18 @@ impl HarnessAnalyzer {
             tool_call_id: None,
         });
 
-        // 检查是否完成 - 只有当LLM明确表示完成且没有未验证候选时才结束
+        // 检查是否完成
         let unverified_count = sub_session.candidates.iter().filter(|c| !c.verified).count();
+        
+        // 完成条件1：LLM明确说 ANALYSIS_COMPLETE 且没有未验证候选
         if content.contains("ANALYSIS_COMPLETE") || content.contains("分析完成") {
             if unverified_count == 0 {
-                // 所有候选都已验证，可以结束
                 log::info!("[LLM 完成确认] 表: {} 所有候选已验证，结束分析", sub_session.table_name);
                 sub_session.completed = true;
                 return self.finish_sub_session(sub_session, parent_session);
             } else {
-                // 还有未验证候选，不能结束，继续验证
                 log::info!("[LLM 完成拒绝] 表: {} 还有{}个未验证候选，继续验证", 
                     sub_session.table_name, unverified_count);
-                // 添加系统提示让LLM继续验证
                 sub_session.messages.push(ChatMessage {
                     role: "system".to_string(),
                     content: format!("注意：还有 {} 个候选关系未验证，请继续调用 verify_foreign_key 验证所有候选后再结束。", unverified_count),
@@ -676,6 +687,15 @@ impl HarnessAnalyzer {
                     tool_call_id: None,
                 });
             }
+        }
+        
+        // 完成条件2：Finalization阶段且没有未验证候选，强制结束
+        let current_phase = HarnessAnalyzer::detect_phase(sub_session);
+        if matches!(current_phase, AnalysisPhase::Finalization) && unverified_count == 0 {
+            log::info!("[LLM 强制完成] 表: {} 在Finalization阶段且无未验证候选，强制结束", 
+                sub_session.table_name);
+            sub_session.completed = true;
+            return self.finish_sub_session(sub_session, parent_session);
         }
 
         // 解析文本中的候选关系
@@ -715,15 +735,48 @@ impl HarnessAnalyzer {
         }
     }
     
-    /// 添加候选关系到子会话（如果不存在）
+    /// 添加或更新候选关系到子会话
     fn add_candidate_if_not_exists(&self, sub_session: &mut SubAnalysisSession, candidate: RelationCandidate) {
-        // 去重检查
-        if !sub_session.candidates.iter().any(|c| 
+        // 过滤掉基础字段（审计、时间、软删除等）
+        let col_lower = candidate.source_column.to_lowercase();
+        let ignored_fields = [
+            "create_by", "created_by", "update_by", "updated_by",
+            "create_user", "update_user", "create_time", "created_time",
+            "update_time", "updated_time", "create_at", "update_at",
+            "delete_flag", "is_deleted", "deleted", "del_flag",
+            "tenant_id",
+            "remark", "remarks", "sort_order", "version",
+            "is_enable", "is_active", "status",
+        ];
+        if ignored_fields.contains(&col_lower.as_str()) {
+            log::debug!("[候选关系] 表: {} | 忽略基础字段: {}", 
+                sub_session.table_name, candidate.source_column);
+            return;
+        }
+        
+        // 查找是否已存在相同的候选
+        if let Some(existing) = sub_session.candidates.iter_mut().find(|c| 
             c.source_table == candidate.source_table &&
             c.source_column == candidate.source_column &&
             c.target_table == candidate.target_table &&
             c.target_column == candidate.target_column
         ) {
+            // 如果已存在且新的是已验证状态，更新验证信息
+            if candidate.verified && !existing.verified {
+                log::info!("[候选关系] 表: {} | {}.{} → {}.{} | 验证更新: verified={} → true, confidence={:.2}%",
+                    sub_session.table_name,
+                    candidate.source_table, candidate.source_column,
+                    candidate.target_table, candidate.target_column,
+                    existing.verified,
+                    candidate.confidence * 100.0,
+                );
+                existing.verified = true;
+                existing.confidence = candidate.confidence;
+                existing.reason = candidate.reason;
+                existing.verification_method = candidate.verification_method;
+            }
+        } else {
+            // 不存在，添加新候选
             log::info!("[候选关系] 表: {} | {}.{} → {}.{} | confidence: {:.2}% | verified: {}",
                 sub_session.table_name,
                 candidate.source_table, candidate.source_column,
@@ -815,10 +868,10 @@ impl HarnessAnalyzer {
             return AnalysisPhase::Finalization;
         }
         
-        // Discovery阶段：没有候选且轮次较少时探索
-        // 一旦有了候选，或者超过8轮，就进入Validation
-        if sub_session.candidates.is_empty() && sub_session.turns_used < 8 {
-            log::info!("[阶段检测] 表: {} 无候选，第{}轮，继续Discovery", 
+        // Discovery阶段：前5轮专门用于发现候选（即使已有候选，也给时间发现更多）
+        // 这样LLM有机会发现一张表的所有可能外键
+        if sub_session.turns_used < 5 {
+            log::info!("[阶段检测] 表: {} 第{}轮，继续Discovery发现候选", 
                 sub_session.table_name, sub_session.turns_used);
             return AnalysisPhase::Discovery;
         }
@@ -857,8 +910,16 @@ impl HarnessAnalyzer {
 2. **类型匹配**: 字段类型与目标表主键类型一致
 3. **命名规律**: 如 user_id → users 表, order_no → orders 表
 
+## 忽略字段（这些不是外键）
+以下基础字段**不应**作为外键候选：
+- 审计字段: `create_by`, `created_by`, `update_by`, `updated_by`, `create_user`, `update_user`
+- 时间字段: `create_time`, `created_time`, `update_time`, `updated_time`, `create_at`, `update_at`
+- 软删除: `delete_flag`, `is_deleted`, `deleted`, `del_flag`
+- 租户/组织: `tenant_id`
+- 其他: `remark`, `remarks`, `sort_order`, `status`, `version`, `is_enable`, `is_active`
+
 ## 输出要求
-列出你发现的所有候选关系，格式：
+列出你发现的所有候选关系（排除上述忽略字段），格式：
 ```json
 {{
   "source_table": "{}",
@@ -870,9 +931,13 @@ impl HarnessAnalyzer {
 }}
 ```
 
+## 重要提示
+- **必须发现所有候选外键后再验证** - 不要发现一个就验证，先把所有可能的候选都列出来
+- 例如：如果表中有 care_project_id 和 ward_code 两个疑似外键，要一次性都发现出来
+
 ## 下一步
-- 如果有候选关系：**立即调用 verify_foreign_key 验证最可能的一个**
-- 如果没有候选：**直接回复 "ANALYSIS_COMPLETE"**
+- **列出所有候选后**：选择置信度最高的一个调用 verify_foreign_key 验证
+- **如果没有候选**：直接回复 "ANALYSIS_COMPLETE"
 "#,
             sub_session.table_name,
             sub_session.table_schema,
@@ -972,26 +1037,25 @@ impl HarnessAnalyzer {
         )
     }
 
-    /// 阶段3: 结束阶段 - 总结并结束
+    /// 阶段3: 结束阶段 - 强制结束分析
     fn build_finalization_prompt(&self, sub_session: &SubAnalysisSession) -> String {
         let verified_count = sub_session.candidates.iter().filter(|c| c.verified).count();
         let unverified_count = sub_session.candidates.iter().filter(|c| !c.verified).count();
         
-        // 如果有未验证候选，提示要继续验证
+        // Finalization 阶段强制结束，不再探索新字段
         let task_instruction = if unverified_count > 0 {
             format!(
-                r#"**警告：还有 {} 个候选关系未验证！**
+                r#"**还有 {} 个候选未验证，但由于已达到结束阶段，不再验证。**
 
-由于接近最大轮次限制，请立即完成以下任务：
-1. **立即调用 verify_foreign_key 验证所有未验证候选**（一张表多个外键很常见）
-2. 快速验证完所有候选后，回复 "ANALYSIS_COMPLETE" 结束"#,
+请立即回复 "ANALYSIS_COMPLETE" 结束当前表的分析。"#,
                 unverified_count
             )
         } else {
-            r#"所有候选关系都已验证完成。
+            r#"所有候选关系都已处理完成。
 
-请确认是否还有其他疑似外键字段未探索（以 "_id"、"_code"、"_no" 结尾的字段）。
-如果没有，回复 "ANALYSIS_COMPLETE" 结束当前表的分析。"#.to_string()
+**立即回复 "ANALYSIS_COMPLETE" 结束当前表的分析。**
+
+注意：不要调用任何工具，直接回复 "ANALYSIS_COMPLETE" 即可。"#.to_string()
         };
         
         format!(
@@ -1001,16 +1065,16 @@ impl HarnessAnalyzer {
 
 ## 状态
 - 已验证关系: {} 个
-- 待验证候选: {} 个
+- 待验证候选: {} 个（不再验证）
 - 已用轮次: {}/{}
 
 ## 任务
 {}
 
-## 重要提醒
-- **一张表可以有多个外键指向不同表，很常见！**
-- **请务必确保所有候选关系都已验证**
-- **验证完成后回复 "ANALYSIS_COMPLETE"**
+## ⚠️ 强制指令
+- **不要调用任何工具！**
+- **不要探索新字段！**
+- **立即回复 "ANALYSIS_COMPLETE" 结束分析！**
 "#,
             sub_session.table_name,
             verified_count,

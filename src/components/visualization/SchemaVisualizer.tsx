@@ -361,7 +361,7 @@ export default function SchemaVisualizer({ connectionId, database, schema }: Sch
         // ===== 表节点 - 3D立体效果 =====
         {
           selector: 'node[type="table"]',
-          style: {
+          style: ({
             'background-color': colors.tableBg,
             'label': 'data(label)',
             'width': 90,
@@ -381,21 +381,21 @@ export default function SchemaVisualizer({ connectionId, database, schema }: Sch
             'shadow-offset-y': 8,
             // 渐变效果（通过背景色模拟）
             'background-opacity': 0.95
-          }
+          } as any)
         },
         {
           selector: 'node[type="table"][expanded = "true"]',
-          style: {
+          style: ({
             'background-color': colors.tableExpandedBg,
             'shadow-blur': 30,
             'shadow-color': isDark ? 'rgba(59,130,246,0.5)' : 'rgba(59,130,246,0.3)',
             'shadow-offset-y': 12
-          }
+          } as any)
         },
         // ===== 列节点 - 3D立体效果 =====
         {
           selector: 'node[type="column"]',
-          style: {
+          style: ({
             'background-color': colors.columnBg,
             'label': 'data(label)',
             'width': 50,
@@ -405,7 +405,7 @@ export default function SchemaVisualizer({ connectionId, database, schema }: Sch
             'text-halign': 'center',
             'color': '#ffffff',
             'font-size': '8px',
-            'font-weight': '500',
+            'font-weight': 500,
             'text-wrap': 'wrap',
             'text-max-width': '42px',
             'border-width': 0,
@@ -415,27 +415,27 @@ export default function SchemaVisualizer({ connectionId, database, schema }: Sch
             'shadow-offset-x': 0,
             'shadow-offset-y': 4,
             'background-opacity': 0.9
-          }
+          } as any)
         },
         {
           selector: 'node[type="column"][columnData.key = "PRI"]',
-          style: {
+          style: ({
             'background-color': '#f59e0b',
             'border-width': 3,
             'border-color': '#fbbf24',
             'shadow-color': 'rgba(245,158,11,0.6)',
             'shadow-blur': 15,
             'shadow-offset-y': 6
-          }
+          } as any)
         },
         // ===== 节点悬停3D效果 =====
         {
           selector: 'node:hover',
-          style: {
+          style: ({
             'shadow-blur': 25,
             'shadow-offset-y': 10,
             'shadow-color': isDark ? 'rgba(255,255,255,0.2)' : 'rgba(0,0,0,0.4)'
-          }
+          } as any)
         },
         // ===== 表-列连接线 - 细直线 =====
         {
@@ -519,11 +519,11 @@ export default function SchemaVisualizer({ connectionId, database, schema }: Sch
         // ===== 关系线悬停高亮 =====
         {
           selector: 'edge:hover',
-          style: {
+          style: ({
             'width': 4,
             'shadow-blur': 10,
             'shadow-color': 'rgba(255,255,255,0.5)'
-          }
+          } as any)
         },
         // ===== 选中状态 =====
         {

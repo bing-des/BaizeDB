@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { Copy, Pencil, Trash2, Filter } from 'lucide-react';
 import ContextMenu, { type MenuEntry } from '../common/ContextMenu';
+import { parseDbInputValue } from '../../utils/cellValue';
 
 type FilterOp = '=' | '!=' | '>' | '<' | '>=' | '<=' | 'LIKE' | 'NOT LIKE' | 'IS NULL' | 'IS NOT NULL';
 
@@ -12,6 +13,7 @@ interface FilterCondition {
 
 interface Props {
   columns: string[];
+  columnTypes?: string[];
   rows: (string | number | boolean | null)[][];
   /** 是否启用编辑模式（双击可修改） */
   editable?: boolean;
@@ -49,6 +51,7 @@ interface Props {
 
 export default function ResultTable({
   columns,
+  columnTypes = [],
   rows,
   editable = false,
   primaryKeyColumn = 0,
@@ -98,20 +101,7 @@ export default function ResultTable({
   // 确认编辑
   const confirmEdit = () => {
     if (!editingCell || !onCellChange) return;
-    let newValue: string | number | boolean | null | undefined;
-
-    const trimmed = editValue.trim();
-    if (trimmed === '' || trimmed.toLowerCase() === 'null') {
-      newValue = null;
-    } else if (trimmed === 'true') {
-      newValue = true;
-    } else if (trimmed === 'false') {
-      newValue = false;
-    } else {
-      const num = Number(trimmed);
-      newValue = Number.isNaN(num) ? trimmed : num;
-    }
-
+    const newValue = parseDbInputValue(editValue, columnTypes[editingCell.col]);
     onCellChange(editingCell.row, editingCell.col, newValue ?? null);
     setEditingCell(null);
   };

@@ -162,7 +162,7 @@ export default function SchemaEditor({ connectionId, database, table, isPostgres
   const [showSqlPreview, setShowSqlPreview] = useState(false);
 
   const previewColumns = useMemo(() => {
-    let result = [...columns];
+    let result: ColumnInfo[] = [...columns];
     for (const op of pendingOps) {
       switch (op.type) {
         case 'add': result = [...result, { name: op.data.column_name, data_type: op.data.column_type, nullable: op.data.nullable, key: '', default_value: op.data.default_value ?? undefined, comment: op.data.comment ?? undefined }]; break;

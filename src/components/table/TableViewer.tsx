@@ -6,6 +6,7 @@ import ResultTable from '../editor/ResultTable';
 import ConfirmModal from '../common/ConfirmModal';
 import SchemaEditor from './SchemaEditor';
 import { useConnectionStore } from '../../store';
+import { parseDbInputValue } from '../../utils/cellValue';
 
 /** 记录单元格的变更 */
 interface CellChange {
@@ -13,6 +14,13 @@ interface CellChange {
   colIndex: number;
   oldValue: string | number | boolean | null;
   newValue: string | number | boolean | null;
+}
+
+interface LoadDataOptions {
+  pageSize?: number;
+  sortBy?: string | null;
+  sortOrder?: 'asc' | 'desc';
+  filters?: Record<string, string> | null;
 }
 
 export default function TableViewer({ tab }: { tab: Tab }) {
@@ -73,6 +81,25 @@ export default function TableViewer({ tab }: { tab: Tab }) {
   const [filterConditions, setFilterConditions] = useState<Record<string, FilterCondition>>({});
   const filterConditionsRef = useRef<Record<string, FilterCondition>>({});
 
+  const findDefaultSortColumnIndex = useCallback((infos: ColumnInfo[]) => {
+    const preferredPkIndex = infos.findIndex((col) => col.key === 'PRI' && col.name.toLowerCase() === 'id');
+    if (preferredPkIndex >= 0) return preferredPkIndex;
+    return infos.findIndex((col) => col.key === 'PRI');
+  }, []);
+
+  const getDefaultSortState = useCallback((infos: ColumnInfo[] = colInfos) => {
+    const defaultSortColumn = findDefaultSortColumnIndex(infos);
+    return {
+      sortColumn: defaultSortColumn >= 0 ? defaultSortColumn : null,
+      sortBy: defaultSortColumn >= 0 ? infos[defaultSortColumn]?.name ?? null : null,
+    };
+  }, [colInfos, findDefaultSortColumnIndex]);
+
+  const resolveSortBy = useCallback((colIndex: number | null) => {
+    if (colIndex === null) return null;
+    return columns[colIndex] ?? colInfos[colIndex]?.name ?? null;
+  }, [columns, colInfos]);
+
   // 构建过滤参数（发送到后端）
   const buildFilters = useCallback((conditions?: Record<string, FilterCondition>) => {
     const result: Record<string, string> = {};
@@ -85,22 +112,14 @@ export default function TableViewer({ tab }: { tab: Tab }) {
     return Object.keys(result).length > 0 ? result : null;
   }, []);
   
-  const loadData = useCallback(async (p: number, size: number = pageSize) => {
+  const loadData = useCallback(async (p: number, options: LoadDataOptions = {}) => {
     if (!database || !table) return;
     setLoading(true);
     try {
-      // 使用当前闭包状态值（useCallback 依赖已包含 sortColumn/sortDirection/filterConditions/columns/pageSize）
-      const sortBy = sortColumn !== null && columns.length > 0 ? columns[sortColumn] : null;
-      const sortOrder = sortDirection;
-
-      // 构建 filters — 从 ref 读取最新值，避免 setState 批量延迟导致闭包陈旧
-      const filters: Record<string, string> = {};
-      for (const [col, cond] of Object.entries(filterConditionsRef.current)) {
-        if (cond.value || cond.op === 'IS NULL' || cond.op === 'IS NOT NULL') {
-          filters[col] = `${cond.op}|${cond.value}`;
-        }
-      }
-      const filtersParam = Object.keys(filters).length > 0 ? filters : null;
+      const size = options.pageSize ?? pageSize;
+      const sortBy = 'sortBy' in options ? (options.sortBy ?? null) : resolveSortBy(sortColumn);
+      const sortOrder = options.sortOrder ?? sortDirection;
+      const filtersParam = 'filters' in options ? (options.filters ?? null) : buildFilters();
       
       console.log(`[TableViewer] loadData connectionId=${connectionId} database=${database} table=${table} page=${p} size=${size}`, { sortBy, sortOrder, filters: filtersParam });
       const r = await databaseApi.getTableData(connectionId, database, table, p, size, sortBy, sortOrder, filtersParam);
@@ -117,34 +136,51 @@ export default function TableViewer({ tab }: { tab: Tab }) {
     } finally {
       setLoading(false);
     }
-  }, [connectionId, database, table, pageSize, sortColumn, sortDirection, filterConditions, columns]);
+  }, [buildFilters, connectionId, database, table, pageSize, resolveSortBy, sortColumn, sortDirection]);
 
   useEffect(() => {
-    loadData(1);
-    if (database && table) {
-      databaseApi.listColumns(connectionId, database, table)
-        .then((cols) => { console.log(`[TableViewer] listColumns columns=${cols.length}`); setColInfos(cols); })
-        .catch((e) => { console.error(`[TableViewer] listColumns error:`, e); });
-    }
+    if (!database || !table) return;
+    databaseApi.listColumns(connectionId, database, table)
+      .then((cols) => {
+        console.log(`[TableViewer] listColumns columns=${cols.length}`);
+        setColInfos(cols);
+
+        const defaultSort = getDefaultSortState(cols);
+        setSortColumn(defaultSort.sortColumn);
+        setSortDirection('asc');
+
+        loadData(1, {
+          sortBy: defaultSort.sortBy,
+          sortOrder: 'asc',
+        });
+      })
+      .catch((e) => {
+        console.error(`[TableViewer] listColumns error:`, e);
+        loadData(1);
+      });
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // 监听刷新事件（来自标签栏右键菜单），清空排序和过滤
   useEffect(() => {
     const handleRefresh = () => {
       console.log('[TableViewer] refresh event received, clearing sort and filters');
-      setSortColumn(null);
+      const defaultSort = getDefaultSortState();
+      setSortColumn(defaultSort.sortColumn);
       setSortDirection('asc');
       setFilterConditions({});
       filterConditionsRef.current = {};
       setFilterValues({});
       setPage(1);
-      // 直接加载数据（ref 已同步，loadData 读到新值）
-      setTimeout(() => loadData(1), 0);
+      loadData(1, {
+        sortBy: defaultSort.sortBy,
+        sortOrder: 'asc',
+        filters: null,
+      });
     };
     
     window.addEventListener(`tab-refresh-${tab.id}`, handleRefresh);
     return () => window.removeEventListener(`tab-refresh-${tab.id}`, handleRefresh);
-  }, [tab.id, loadData]);
+  }, [getDefaultSortState, loadData, tab.id]);
 
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
 
@@ -169,13 +205,18 @@ export default function TableViewer({ tab }: { tab: Tab }) {
       newSortDirection = 'asc';
     }
     
-    // 更新状态（触发 UI 更新 + loadData 通过闭包读到新值）
+    const nextSortBy = resolveSortBy(newSortColumn);
+
+    // 更新状态
     setSortColumn(newSortColumn);
     setSortDirection(newSortDirection);
     setPage(1);
     
-    // 直接加载数据
-    loadData(1);
+    // 直接加载数据，避免读到旧排序状态
+    loadData(1, {
+      sortBy: nextSortBy,
+      sortOrder: newSortDirection,
+    });
   };
   
   // 应用排序和过滤
@@ -183,12 +224,17 @@ export default function TableViewer({ tab }: { tab: Tab }) {
 
   // 重置所有过滤
   const resetFilters = () => {
+    const defaultSort = getDefaultSortState();
     setFilterConditions({});
     filterConditionsRef.current = {};
-    setSortColumn(null);
+    setSortColumn(defaultSort.sortColumn);
     setSortDirection('asc');
     setPage(1);
-    loadData(1);
+    loadData(1, {
+      sortBy: defaultSort.sortBy,
+      sortOrder: 'asc',
+      filters: null,
+    });
   };
 
   // 处理过滤条件变更并立即应用
@@ -205,12 +251,18 @@ export default function TableViewer({ tab }: { tab: Tab }) {
     // 同步写入 ref（确保 loadData 立即读到新值）
     filterConditionsRef.current = newConditions;
     
-    // 更新状态（触发 UI 更新）
+    const sortBy = resolveSortBy(sortColumn);
+
+    // 更新状态
     setFilterConditions(newConditions);
     setPage(1);
     
     // 直接加载数据（从 ref 读到最新值）
-    loadData(1);
+    loadData(1, {
+      sortBy,
+      sortOrder: sortDirection,
+      filters: buildFilters(newConditions),
+    });
   };
 
   const exportCSV = () => {
@@ -304,14 +356,9 @@ export default function TableViewer({ tab }: { tab: Tab }) {
     let hasValue = false;
     for (const col of columns) {
       const val = newRowValues[col];
-      if (val !== undefined && val !== '') {
+      if (val !== undefined && val.trim() !== '') {
         const colInfo = colInfos.find(c => c.name === col);
-        const dt = colInfo?.data_type?.toLowerCase() || '';
-        if (/^(int|bigint|smallint|integer|serial|bigserial|smallserial|tinyint|numeric|decimal|float|real|double)/.test(dt)) {
-          columnValues[col] = val.includes('.') ? parseFloat(val) : parseInt(val, 10);
-        } else {
-          columnValues[col] = val;
-        }
+        columnValues[col] = parseDbInputValue(val, colInfo?.data_type);
         hasValue = true;
       }
     }
@@ -500,16 +547,21 @@ export default function TableViewer({ tab }: { tab: Tab }) {
             <button 
               className="btn-ghost py-1 text-xs" 
               onClick={() => {
-                setSortColumn(null);
+                const defaultSort = getDefaultSortState();
+                setSortColumn(defaultSort.sortColumn);
                 setSortDirection('asc');
                 setFilterConditions({});
                 filterConditionsRef.current = {};
                 setFilterValues({});
                 setPage(1);
-                setTimeout(() => loadData(1), 0);
+                loadData(1, {
+                  sortBy: defaultSort.sortBy,
+                  sortOrder: 'asc',
+                  filters: null,
+                });
               }} 
               disabled={loading}
-              title="刷新并清空排序/过滤"
+              title="刷新并重置排序/过滤"
             >
               <RefreshCw size={12} className={loading ? 'animate-spin' : ''} />
             </button>
@@ -533,7 +585,7 @@ export default function TableViewer({ tab }: { tab: Tab }) {
                   const newSize = Number(e.target.value);
                   setPageSize(newSize);
                   setPage(1); // 切换条数时回到第一页
-                  loadData(1, newSize);
+                  loadData(1, { pageSize: newSize });
                 }}
               >
                 {[10, 20, 50, 100, 200].map((n) => (
@@ -560,6 +612,7 @@ export default function TableViewer({ tab }: { tab: Tab }) {
             <div className="h-full overflow-auto">
               <ResultTable
                 columns={columns}
+                columnTypes={columnTypes}
                 rows={rows}
                 editable={true}
                 primaryKeyColumn={primaryKeyColIndex}

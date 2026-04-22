@@ -1,31 +1,16 @@
+//! 连接配置存储 + 关系存储（委托给 RelationStore）
+//!
+//! 保持原有 API 兼容，内部委托给 relation_store 模块。
+
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use sqlx::{SqlitePool, sqlite::SqlitePoolOptions, Row};
+use sqlx::{SqlitePool, sqlite::SqlitePoolOptions};
 use tauri::Manager;
-use serde::{Deserialize, Serialize};
+
 
 use crate::state::{ConnectionConfig, DbType};
-
-/// 表关系分析结果
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TableRelationAnalysis {
-    pub source_table: String,
-    pub source_column: String,
-    pub target_table: String,
-    pub target_column: String,
-    pub relation_type: String,
-    pub confidence: f32,
-    pub reason: String,
-}
-
-/// LLM 配置
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct LlmConfig {
-    pub api_key: String,
-    pub api_url: String,
-    pub model: String,
-    pub enabled: bool,
-}
+use crate::store::harness_types::{TableRelationAnalysis, LlmConfig};
+use crate::store::relation_store::RelationStore;
 
 /// 列元信息（用于 LLM 分析）
 #[derive(Debug, Clone)]
@@ -41,25 +26,6 @@ pub struct ColumnMeta {
 pub struct TableSchema {
     pub name: String,
     pub columns: Vec<ColumnMeta>,
-}
-
-/// 连接配置存储抽象 trait
-///
-/// 屏蔽底层实现细节，支持未来切换存储后端（如文件、远程服务等）。
-#[async_trait::async_trait]
-#[allow(dead_code)]
-pub trait ConnectionStore: Send + Sync {
-    /// 初始化存储（建表等）
-    async fn init(&self) -> Result<(), String>;
-
-    /// 插入连接配置
-    async fn insert(&self, config: &ConnectionConfig) -> Result<(), String>;
-
-    /// 根据 ID 删除
-    async fn delete(&self, id: &str) -> Result<(), String>;
-
-    /// 查询所有连接配置（按 name 排序）
-    async fn list_all(&self) -> Result<Vec<ConnectionConfig>, String>;
 }
 
 // ---------------------------------------------------------------------------
@@ -202,10 +168,19 @@ impl SqliteConnectionStore {
     }
 }
 
+/// 连接配置存储抽象 trait
+#[async_trait::async_trait]
+#[allow(dead_code)]
+pub trait ConnectionStore: Send + Sync {
+    async fn init(&self) -> Result<(), String>;
+    async fn insert(&self, config: &ConnectionConfig) -> Result<(), String>;
+    async fn delete(&self, id: &str) -> Result<(), String>;
+    async fn list_all(&self) -> Result<Vec<ConnectionConfig>, String>;
+}
+
 #[async_trait::async_trait]
 impl ConnectionStore for SqliteConnectionStore {
     async fn init(&self) -> Result<(), String> {
-        // 建表逻辑已在 init_pool 中完成，此处为兼容 trait 的空操作
         Ok(())
     }
 
@@ -280,12 +255,12 @@ impl ConnectionStore for SqliteConnectionStore {
 }
 
 // ---------------------------------------------------------------------------
-// SqliteConnectionStore 额外方法（非 trait 方法）
+// SqliteConnectionStore 额外方法（委托给 RelationStore）
 // ---------------------------------------------------------------------------
 
 impl SqliteConnectionStore {
     // ---------------------------------------------------------------------------
-    // LLM 分析结果存储方法
+    // LLM 分析结果存储方法（委托给 RelationStore）
     // ---------------------------------------------------------------------------
 
     /// 保存表关系分析结果
@@ -296,51 +271,7 @@ impl SqliteConnectionStore {
         relations: &[TableRelationAnalysis],
     ) -> Result<(), String> {
         let pool = self.get_pool().await?;
-        let mut tx = pool.begin().await.map_err(|e| format!("开始事务失败: {}", e))?;
-
-        for relation in relations {
-            // 先删除已存在的相同关系（基于复合唯一键）
-            sqlx::query(
-                r#"
-                DELETE FROM table_relations 
-                WHERE connection_id = ?1 
-                  AND database = ?2 
-                  AND source_table = ?3 
-                  AND source_column = ?4
-                "#
-            )
-            .bind(connection_id)
-            .bind(database)
-            .bind(&relation.source_table)
-            .bind(&relation.source_column)
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| format!("删除旧关系失败: {}", e))?;
-
-            // 插入新关系
-            sqlx::query(
-                r#"
-                INSERT INTO table_relations 
-                (connection_id, database, source_table, source_column, target_table, target_column, relation_type, confidence, reason, updated_at)
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, CURRENT_TIMESTAMP)
-                "#
-            )
-            .bind(connection_id)
-            .bind(database)
-            .bind(&relation.source_table)
-            .bind(&relation.source_column)
-            .bind(&relation.target_table)
-            .bind(&relation.target_column)
-            .bind(&relation.relation_type)
-            .bind(relation.confidence)
-            .bind(&relation.reason)
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| format!("保存关系失败: {}", e))?;
-        }
-
-        tx.commit().await.map_err(|e| format!("提交事务失败: {}", e))?;
-        Ok(())
+        RelationStore::save_relations(&pool, connection_id, database, relations).await
     }
 
     /// 读取表关系分析结果
@@ -350,177 +281,51 @@ impl SqliteConnectionStore {
         database: &str,
     ) -> Result<Vec<TableRelationAnalysis>, String> {
         let pool = self.get_pool().await?;
-
-        let rows = sqlx::query(
-            r#"
-            SELECT source_table, source_column, target_table, target_column, 
-                   relation_type, confidence, reason
-            FROM table_relations
-            WHERE connection_id = ?1 AND database = ?2
-            ORDER BY confidence DESC
-            "#
-        )
-        .bind(connection_id)
-        .bind(database)
-        .fetch_all(&pool)
-        .await
-        .map_err(|e| format!("查询关系失败: {}", e))?;
-
-        let mut relations = Vec::new();
-        for row in rows {
-            relations.push(TableRelationAnalysis {
-                source_table: row.try_get("source_table").map_err(|e| e.to_string())?,
-                source_column: row.try_get("source_column").map_err(|e| e.to_string())?,
-                target_table: row.try_get("target_table").map_err(|e| e.to_string())?,
-                target_column: row.try_get("target_column").map_err(|e| e.to_string())?,
-                relation_type: row.try_get("relation_type").map_err(|e| e.to_string())?,
-                confidence: row.try_get("confidence").map_err(|e| e.to_string())?,
-                reason: row.try_get("reason").map_err(|e| e.to_string())?,
-            });
-        }
-
-        Ok(relations)
+        RelationStore::get_relations(&pool, connection_id, database).await
     }
 
     /// 检查是否存在分析结果
     pub async fn has_relations(&self, connection_id: &str, database: &str) -> Result<bool, String> {
         let pool = self.get_pool().await?;
-
-        let row = sqlx::query(
-            r#"
-            SELECT COUNT(*) as count FROM table_relations
-            WHERE connection_id = ?1 AND database = ?2
-            "#
-        )
-        .bind(connection_id)
-        .bind(database)
-        .fetch_one(&pool)
-        .await
-        .map_err(|e| format!("查询失败: {}", e))?;
-
-        let count: i64 = row.try_get("count").map_err(|e| e.to_string())?;
-        Ok(count > 0)
+        RelationStore::has_relations(&pool, connection_id, database).await
     }
 
     /// 删除分析结果
     pub async fn delete_relations(&self, connection_id: &str, database: &str) -> Result<(), String> {
         let pool = self.get_pool().await?;
-
-        sqlx::query(
-            r#"
-            DELETE FROM table_relations
-            WHERE connection_id = ?1 AND database = ?2
-            "#
-        )
-        .bind(connection_id)
-        .bind(database)
-        .execute(&pool)
-        .await
-        .map_err(|e| format!("删除关系失败: {}", e))?;
-
-        Ok(())
+        RelationStore::delete_relations(&pool, connection_id, database).await
     }
 
     // ---------------------------------------------------------------------------
-    // LLM 配置存储方法
+    // LLM 配置存储方法（委托给 RelationStore）
     // ---------------------------------------------------------------------------
 
     /// 获取 LLM 配置
     pub async fn get_llm_config(&self) -> Result<LlmConfig, String> {
         let pool = self.get_pool().await?;
-
-        let row = sqlx::query(
-            r#"
-            SELECT api_key, api_url, model, enabled
-            FROM llm_config
-            WHERE id = 1
-            "#
-        )
-        .fetch_one(&pool)
-        .await
-        .map_err(|e| format!("查询配置失败: {}", e))?;
-
-        Ok(LlmConfig {
-            api_key: row.try_get("api_key").map_err(|e| e.to_string())?,
-            api_url: row.try_get("api_url").map_err(|e| e.to_string())?,
-            model: row.try_get("model").map_err(|e| e.to_string())?,
-            enabled: row.try_get::<i64, _>("enabled").map(|v| v != 0).unwrap_or(false),
-        })
+        RelationStore::get_llm_config(&pool).await
     }
 
     /// 保存 LLM 配置
     pub async fn save_llm_config(&self, config: &LlmConfig) -> Result<(), String> {
         let pool = self.get_pool().await?;
-
-        sqlx::query(
-            r#"
-            INSERT INTO llm_config (id, api_key, api_url, model, enabled, updated_at)
-            VALUES (1, ?1, ?2, ?3, ?4, CURRENT_TIMESTAMP)
-            ON CONFLICT(id) 
-            DO UPDATE SET
-                api_key = excluded.api_key,
-                api_url = excluded.api_url,
-                model = excluded.model,
-                enabled = excluded.enabled,
-                updated_at = CURRENT_TIMESTAMP
-            "#
-        )
-        .bind(&config.api_key)
-        .bind(&config.api_url)
-        .bind(&config.model)
-        .bind(if config.enabled { 1 } else { 0 })
-        .execute(&pool)
-        .await
-        .map_err(|e| format!("保存配置失败: {}", e))?;
-
-        Ok(())
+        RelationStore::save_llm_config(&pool, config).await
     }
 
     // ---------------------------------------------------------------------------
-    // 通用设置存储方法
+    // 通用设置存储方法（委托给 RelationStore）
     // ---------------------------------------------------------------------------
 
     /// 获取通用设置
     pub async fn get_setting(&self, key: &str) -> Result<Option<String>, String> {
         let pool = self.get_pool().await?;
-
-        let row = sqlx::query(
-            r#"
-            SELECT value FROM settings WHERE key = ?1
-            "#
-        )
-        .bind(key)
-        .fetch_optional(&pool)
-        .await
-        .map_err(|e| format!("查询设置失败: {}", e))?;
-
-        match row {
-            Some(r) => Ok(Some(r.try_get("value").map_err(|e| e.to_string())?)),
-            None => Ok(None),
-        }
+        RelationStore::get_setting(&pool, key).await
     }
 
     /// 保存通用设置
     pub async fn set_setting(&self, key: &str, value: &str) -> Result<(), String> {
         let pool = self.get_pool().await?;
-
-        sqlx::query(
-            r#"
-            INSERT INTO settings (key, value, updated_at)
-            VALUES (?1, ?2, CURRENT_TIMESTAMP)
-            ON CONFLICT(key) 
-            DO UPDATE SET
-                value = excluded.value,
-                updated_at = CURRENT_TIMESTAMP
-            "#
-        )
-        .bind(key)
-        .bind(value)
-        .execute(&pool)
-        .await
-        .map_err(|e| format!("保存设置失败: {}", e))?;
-
-        Ok(())
+        RelationStore::set_setting(&pool, key, value).await
     }
 }
 
@@ -528,10 +333,6 @@ impl SqliteConnectionStore {
 // 便捷初始化函数：建表 + 加载到内存 HashMap
 // ---------------------------------------------------------------------------
 
-/// 初始化已有 store 实例（建表 + 创建连接池）+ 加载已有连接
-///
-/// 直接操作传入的 store 实例，不创建新对象。
-/// 返回已加载的连接配置列表，由调用方写入 AppState.connections。
 pub async fn init_store(
     store: &SqliteConnectionStore,
     app: &tauri::App,

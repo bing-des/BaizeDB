@@ -62,14 +62,20 @@ fn main() {
             commands::llm::get_llm_config,
             commands::llm::save_llm_config,
             commands::llm::test_llm_config,
-            // Harness 多阶段分析
-            commands::harness::harness_start_analysis,
-            commands::harness::harness_run_turn,
-            commands::harness::harness_get_session_info,
-            commands::harness::harness_get_candidates,
-            commands::harness::harness_get_steps,
-            commands::harness::harness_delete_session,
-            commands::harness::harness_list_sessions,
+            // Harness 工具（简化版）
+            commands::harness::harness_get_tool_definitions,
+            commands::harness::harness_execute_sql,
+            commands::harness::harness_get_relations,
+            commands::harness::harness_has_relations,
+            commands::harness::harness_save_relations,
+            commands::harness::harness_delete_relations,
+            commands::harness::harness_list_tables,
+            commands::harness::harness_get_table_schema,
+            commands::harness::harness_get_table_sample,
+            commands::harness::harness_get_llm_config,
+            commands::harness::harness_save_llm_config,
+            commands::harness::harness_export_relations,
+            commands::harness::harness_import_relations,
         ])
         .setup(|app| {
             let window = app.get_webview_window("main").unwrap();

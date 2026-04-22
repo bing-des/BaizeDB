@@ -22,11 +22,7 @@ import type {
   LlmConfig,
   LlmConfigResponse,
   // Harness types
-  HarnessSessionInfo,
-  HarnessAnalysisStep,
-  HarnessCandidatesResponse,
-  HarnessStartRequest,
-  HarnessTurnResponse,
+  ToolResult,
 } from '../types';
 
 export type NewConnectionInput = Omit<ConnectionConfig, 'id'>;
@@ -165,26 +161,106 @@ export const migrationApi = {
     }),
 };
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Harness 工具 API（简化版 - 直接工具调用，无会话管理）
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface HarnessExecuteSqlRequest {
+  connection_id: string;
+  database: string;
+  sql: string;
+}
+
+export interface HarnessSaveRelationsRequest {
+  connection_id: string;
+  database: string;
+  relations: TableRelationAnalysis[];
+}
+
+export interface HarnessQueryRelationsRequest {
+  connection_id: string;
+  database: string;
+}
+
+export interface HarnessListTablesRequest {
+  connection_id: string;
+  database: string;
+}
+
+export interface HarnessGetTableSchemaRequest {
+  connection_id: string;
+  database: string;
+  table_name: string;
+}
+
+export interface HarnessGetTableSampleRequest {
+  connection_id: string;
+  database: string;
+  table_name: string;
+  limit?: number;
+}
+
+/** 工具定义（供 LLM 使用） */
+export interface ToolDefinition {
+  name: string;
+  description: string;
+  parameters: {
+    type: string;
+    properties: Record<string, unknown>;
+    required: string[];
+  };
+}
+
 export const harnessApi = {
-  /** 开始新的分析会话 */
-  startAnalysis: (request: HarnessStartRequest) =>
-    invoke<HarnessSessionInfo>('harness_start_analysis', { request }),
-  /** 执行一轮分析 */
-  runTurn: (sessionId: string) =>
-    invoke<HarnessTurnResponse>('harness_run_turn', { sessionId }),
-  /** 获取会话信息 */
-  getSessionInfo: (sessionId: string) =>
-    invoke<HarnessSessionInfo>('harness_get_session_info', { sessionId }),
-  /** 获取候选关系列表 */
-  getCandidates: (sessionId: string) =>
-    invoke<HarnessCandidatesResponse>('harness_get_candidates', { sessionId }),
-  /** 获取分析步骤历史 */
-  getSteps: (sessionId: string) =>
-    invoke<HarnessAnalysisStep[]>('harness_get_steps', { sessionId }),
-  /** 删除分析会话 */
-  deleteSession: (sessionId: string) =>
-    invoke<void>('harness_delete_session', { sessionId }),
-  /** 获取所有活跃会话 */
-  listSessions: () =>
-    invoke<HarnessSessionInfo[]>('harness_list_sessions'),
+  /** 执行 SQL 查询 */
+  executeSql: (request: HarnessExecuteSqlRequest) =>
+    invoke<ToolResult>('harness_execute_sql', { request }),
+
+  /** 获取已保存的表关系 */
+  getRelations: (request: HarnessQueryRelationsRequest) =>
+    invoke<TableRelationAnalysis[]>('harness_get_relations', { request }),
+
+  /** 检查是否存在表关系 */
+  hasRelations: (request: HarnessQueryRelationsRequest) =>
+    invoke<boolean>('harness_has_relations', { request }),
+
+  /** 保存表关系 */
+  saveRelations: (request: HarnessSaveRelationsRequest) =>
+    invoke<void>('harness_save_relations', { request }),
+
+  /** 删除表关系 */
+  deleteRelations: (request: HarnessQueryRelationsRequest) =>
+    invoke<void>('harness_delete_relations', { request }),
+
+  /** 列出所有表 */
+  listTables: (request: HarnessListTablesRequest) =>
+    invoke<string[]>('harness_list_tables', { request }),
+
+  /** 获取表结构 */
+  getTableSchema: (request: HarnessGetTableSchemaRequest) =>
+    invoke<ColumnInfo[]>('harness_get_table_schema', { request }),
+
+  /** 获取表数据样本 */
+  getTableSample: (request: HarnessGetTableSampleRequest) =>
+    invoke<{ columns: string[]; rows: unknown[][] }>('harness_get_table_sample', { request }),
+
+  /** 获取工具定义列表（供 LLM 使用） */
+  getToolDefinitions: () =>
+    invoke<ToolDefinition[]>('harness_get_tool_definitions'),
+
+  /** 获取 LLM 配置 */
+  getLlmConfig: () =>
+    invoke<LlmConfig>('harness_get_llm_config'),
+
+  /** 保存 LLM 配置 */
+  saveLlmConfig: (config: LlmConfig) =>
+    invoke<void>('harness_save_llm_config', { config }),
+
+  /** 导出表关系为 JSON 字符串 */
+  exportRelations: (request: HarnessQueryRelationsRequest) =>
+    invoke<string>('harness_export_relations', { request }),
+
+  /** 从 JSON 字符串导入表关系 */
+  importRelations: (request: HarnessSaveRelationsRequest) =>
+    invoke<number>('harness_import_relations', { request }),
 };

@@ -1,15 +1,14 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import cytoscape from 'cytoscape';
 import fcose from 'cytoscape-fcose';
-import { Loader2, ZoomIn, ZoomOut, Maximize, Download, RefreshCw, Save, FolderOpen, Trash2, Sparkles, X } from 'lucide-react';
+import { Loader2, ZoomIn, ZoomOut, Maximize, Download, RefreshCw, Save, FolderOpen, Trash2 } from 'lucide-react';
 
 // 注册 fcose 布局
 cytoscape.use(fcose);
-import { databaseApi, llmApi } from '../../utils/api';
+import { databaseApi } from '../../utils/api';
 import { useThemeStore } from '../../store';
-import type { DatabaseMetadata, TableMetadata, ColumnInfo, TableRelationAnalysis } from '../../types';
+import type { DatabaseMetadata, TableMetadata, ColumnInfo } from '../../types';
 import ConfirmModal from '../common/ConfirmModal';
-import HarnessAnalysisPanel from './HarnessAnalysisPanel';
 
 interface SchemaVisualizerProps {
   connectionId: string;
@@ -36,15 +35,6 @@ export default function SchemaVisualizer({ connectionId, database, schema }: Sch
   const [selectedNode, setSelectedNode] = useState<any>(null);
   const [confirmClear, setConfirmClear] = useState(false);
   const [, forceUpdate] = useState({});
-  
-  // LLM 分析相关状态
-  const [llmRelations, setLlmRelations] = useState<TableRelationAnalysis[]>([]);
-  const [llmLoading, setLlmLoading] = useState(false);
-  const [llmError, setLlmError] = useState<string | null>(null);
-  const [hasLlmCache, setHasLlmCache] = useState(false);
-
-  // Harness 多阶段分析面板
-  const [showHarnessPanel, setShowHarnessPanel] = useState(false);
 
   // 判断当前是否为深色主题
   const isDark = theme === 'dark' || (theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
@@ -215,88 +205,7 @@ export default function SchemaVisualizer({ connectionId, database, schema }: Sch
     return edges;
   }, []);
 
-  // 创建 LLM 分析的表关系边（虚线）
-  const createLlmRelationEdges = useCallback((metadata: DatabaseMetadata, expandedTables: Set<string>): cytoscape.ElementDefinition[] => {
-    const edges: cytoscape.ElementDefinition[] = [];
-    
-    if (!metadata.llm_relations || metadata.llm_relations.length === 0) {
-      return edges;
-    }
-    
-    metadata.llm_relations.forEach((rel, index) => {
-      const sourceTable = rel.source_table;
-      const targetTable = rel.target_table;
-      const sourceExpanded = expandedTables.has(sourceTable);
-      const targetExpanded = expandedTables.has(targetTable);
-      
-      // 两个表都展开：列到列
-      if (sourceExpanded && targetExpanded) {
-        const sourceColId = `col-${sourceTable}-${rel.source_column}`;
-        const targetColId = `col-${targetTable}-${rel.target_column}`;
-        
-        edges.push({
-          data: {
-            id: `llm-rel-${index}`,
-            source: sourceColId,
-            target: targetColId,
-            label: `${rel.relation_type} (${Math.round(rel.confidence * 100)}%)`,
-            type: 'llm_relation',
-            llmData: rel
-          }
-        });
-      }
-      // 源表展开，目标表未展开：源字段 → 目标表
-      else if (sourceExpanded && !targetExpanded) {
-        const sourceColId = `col-${sourceTable}-${rel.source_column}`;
-        const targetTableId = `table-${targetTable}`;
-        
-        edges.push({
-          data: {
-            id: `llm-rel-col-table-${index}`,
-            source: sourceColId,
-            target: targetTableId,
-            label: `${rel.relation_type} (${Math.round(rel.confidence * 100)}%)`,
-            type: 'llm_relation_table',
-            llmData: rel
-          }
-        });
-      }
-      // 源表未展开，目标表展开：源表 → 目标字段
-      else if (!sourceExpanded && targetExpanded) {
-        const sourceTableId = `table-${sourceTable}`;
-        const targetColId = `col-${targetTable}-${rel.target_column}`;
-        
-        edges.push({
-          data: {
-            id: `llm-rel-table-col-${index}`,
-            source: sourceTableId,
-            target: targetColId,
-            label: `${rel.relation_type} (${Math.round(rel.confidence * 100)}%)`,
-            type: 'llm_relation_table',
-            llmData: rel
-          }
-        });
-      }
-      // 两个表都未展开：表到表
-      else {
-        const sourceTableId = `table-${sourceTable}`;
-        const targetTableId = `table-${targetTable}`;
-        
-        edges.push({
-          data: {
-            id: `llm-rel-table-${index}`,
-            source: sourceTableId,
-            target: targetTableId,
-            label: `${rel.relation_type} (${Math.round(rel.confidence * 100)}%)`,
-            type: 'llm_relation_table',
-            llmData: rel
-          }
-        });
-      }
-    });
 
-    return edges;
-  }, []);
 
   const initCy = useCallback((data: DatabaseMetadata, darkMode: boolean) => {
     if (!containerRef.current) return;
@@ -321,9 +230,6 @@ export default function SchemaVisualizer({ connectionId, database, schema }: Sch
       fkLine: '#6b7280',
       fkText: '#6b7280',
       fkTextBg: '#ffffff',
-      llmLine: '#a855f7',
-      llmText: '#a855f7',
-      llmTextBg: '#ffffff',
     } : {
       tableBg: '#3b82f6',
       tableBorder: '#2563eb',
@@ -336,9 +242,6 @@ export default function SchemaVisualizer({ connectionId, database, schema }: Sch
       fkLine: '#6b7280',
       fkText: '#4b5563',
       fkTextBg: '#ffffff',
-      llmLine: '#9333ea',
-      llmText: '#9333ea',
-      llmTextBg: '#ffffff',
     };
     
     // 创建表节点（不预设位置，由布局算法决定）
@@ -347,7 +250,6 @@ export default function SchemaVisualizer({ connectionId, database, schema }: Sch
     });
 
     const fkEdges = createForeignKeyEdges(data, new Set());
-    const llmEdges = createLlmRelationEdges(data, new Set());
 
     const cy = cytoscape({
       container: containerRef.current,
@@ -355,7 +257,6 @@ export default function SchemaVisualizer({ connectionId, database, schema }: Sch
         ...initialNodes,
         // 初始化时添加表到表的关系连线
         ...fkEdges,
-        ...llmEdges
       ],
       style: [
         // ===== 表节点 - 3D立体效果 =====
@@ -481,41 +382,7 @@ export default function SchemaVisualizer({ connectionId, database, schema }: Sch
             'line-dash-offset': 0
           }
         },
-        // ===== LLM 关系 - 虚线动画效果 =====
-        {
-          selector: 'edge[type="llm_relation"]',
-          style: {
-            'width': 2,
-            'line-color': colors.llmLine,
-            'target-arrow-color': colors.llmLine,
-            'target-arrow-shape': 'triangle',
-            'curve-style': 'bezier',
-            'arrow-scale': 1.2,
-            'line-style': 'dashed',
-            'line-dash-pattern': [8, 6],
-            'line-dash-offset': 0
-          }
-        },
-        {
-          selector: 'edge[type="llm_relation_table"]',
-          style: {
-            'width': 2,
-            'line-color': colors.llmLine,
-            'target-arrow-color': colors.llmLine,
-            'target-arrow-shape': 'triangle',
-            'curve-style': 'bezier',
-            'arrow-scale': 1.2,
-            'line-style': 'dashed',
-            'line-dash-pattern': [8, 6],
-            'line-dash-offset': 0,
-            'label': 'data(label)',
-            'font-size': '9px',
-            'color': colors.llmText,
-            'text-background-color': colors.llmTextBg,
-            'text-background-opacity': 0.8,
-            'text-background-padding': '2px'
-          }
-        },
+
         // ===== 关系线悬停高亮 =====
         {
           selector: 'edge:hover',
@@ -556,7 +423,7 @@ export default function SchemaVisualizer({ connectionId, database, schema }: Sch
       idealEdgeLength: (edge: cytoscape.EdgeSingular) => {
         const type = edge.data('type');
         // 有关系的表之间距离较近（聚类）
-        if (type?.includes('foreign_key') || type?.includes('llm_relation')) {
+        if (type?.includes('foreign_key')) {
           return 180;
         }
         // 表-列关系保持中等距离
@@ -579,7 +446,7 @@ export default function SchemaVisualizer({ connectionId, database, schema }: Sch
       // 边弹性
       edgeElasticity: (edge: cytoscape.EdgeSingular) => {
         const type = edge.data('type');
-        if (type?.includes('foreign_key') || type?.includes('llm_relation')) {
+        if (type?.includes('foreign_key')) {
           return 0.9; // 关系边弹性高，保持紧凑
         }
         if (type === 'table_column') {
@@ -624,8 +491,8 @@ export default function SchemaVisualizer({ connectionId, database, schema }: Sch
 
       if (!metadata) return;
 
-      // 移除所有现有的关系边（外键 + LLM），展开/收起后会重新计算
-      cy.edges('[type="foreign_key"], [type="foreign_key_table"], [type="llm_relation"], [type="llm_relation_table"]').remove();
+      // 移除所有现有的关系边（外键），展开/收起后会重新计算
+      cy.edges('[type="foreign_key"], [type="foreign_key_table"]').remove();
 
       if (isExpanded) {
         // 收起
@@ -658,11 +525,6 @@ export default function SchemaVisualizer({ connectionId, database, schema }: Sch
       
       const newFkEdges = createForeignKeyEdges(metadata, expandedTableNames);
       newFkEdges.forEach(edge => {
-        cy.add(edge);
-      });
-      
-      const newLlmEdges = createLlmRelationEdges(metadata, expandedTableNames);
-      newLlmEdges.forEach(edge => {
         cy.add(edge);
       });
 
@@ -771,7 +633,7 @@ export default function SchemaVisualizer({ connectionId, database, schema }: Sch
     });
 
     cyRef.current = cy;
-  }, [createTableNode, createColumnNodesAndEdges, createForeignKeyEdges, createLlmRelationEdges]);
+  }, [createTableNode, createColumnNodesAndEdges, createForeignKeyEdges]);
 
   const loadMetadata = useCallback(async () => {
     setLoading(true);
@@ -786,42 +648,6 @@ export default function SchemaVisualizer({ connectionId, database, schema }: Sch
       setLoading(false);
     }
   }, [connectionId, database, schema, initCy, isDark]);
-
-  // 加载 LLM 分析结果（优先从 SQLite 读取）
-  const loadLlmRelations = useCallback(async () => {
-    setLlmLoading(true);
-    setLlmError(null);
-    try {
-      const response = await llmApi.getTableRelations(connectionId, database, schema);
-      setLlmRelations(response.relations);
-      setHasLlmCache(response.from_cache);
-    } catch (e) {
-      setLlmError(String(e));
-    } finally {
-      setLlmLoading(false);
-    }
-  }, [connectionId, database, schema]);
-
-  // 刷新 LLM 分析（强制重新分析）
-  const refreshLlmRelations = useCallback(async () => {
-    setLlmLoading(true);
-    setLlmError(null);
-    try {
-      const response = await llmApi.refreshTableRelations(connectionId, database, schema);
-      setLlmRelations(response.relations);
-      setHasLlmCache(false);
-    } catch (e) {
-      setLlmError(String(e));
-    } finally {
-      setLlmLoading(false);
-    }
-  }, [connectionId, database, schema]);
-
-  // Harness 分析完成回调
-  const handleHarnessRelationsFound = useCallback((relations: TableRelationAnalysis[]) => {
-    setLlmRelations(relations);
-    setHasLlmCache(false);
-  }, []);
 
   const saveToLocal = useCallback(async () => {
     if (!metadata) return;
@@ -888,7 +714,7 @@ export default function SchemaVisualizer({ connectionId, database, schema }: Sch
     const metadata = metadataRef.current;
     
     // 先移除所有现有关系边
-    cy.edges('[type="foreign_key"], [type="foreign_key_table"], [type="llm_relation"], [type="llm_relation_table"]').remove();
+    cy.edges('[type="foreign_key"], [type="foreign_key_table"]').remove();
     
     metadata.tables.forEach(table => {
       if (!expandedTablesRef.current.has(table.name)) {
@@ -914,14 +740,8 @@ export default function SchemaVisualizer({ connectionId, database, schema }: Sch
       cy.add(edge);
     });
     
-    // 重新创建 LLM 关系边
-    const newLlmEdges = createLlmRelationEdges(metadata, expandedTableNames);
-    newLlmEdges.forEach(edge => {
-      cy.add(edge);
-    });
-    
     forceUpdate({});
-  }, [createColumnNodesAndEdges, createForeignKeyEdges, createLlmRelationEdges]);
+  }, [createColumnNodesAndEdges, createForeignKeyEdges]);
 
   const collapseAll = useCallback(() => {
     if (!cyRef.current || !metadataRef.current) return;
@@ -929,7 +749,7 @@ export default function SchemaVisualizer({ connectionId, database, schema }: Sch
     const metadata = metadataRef.current;
     
     // 先移除所有关系边
-    cy.edges('[type="foreign_key"], [type="foreign_key_table"], [type="llm_relation"], [type="llm_relation_table"]').remove();
+    cy.edges('[type="foreign_key"], [type="foreign_key_table"]').remove();
     
     // 移除所有展开的列节点
     expandedTablesRef.current.forEach((expanded) => {
@@ -950,18 +770,12 @@ export default function SchemaVisualizer({ connectionId, database, schema }: Sch
       cy.add(edge);
     });
     
-    const newLlmEdges = createLlmRelationEdges(metadata, emptyExpanded);
-    newLlmEdges.forEach(edge => {
-      cy.add(edge);
-    });
-    
     forceUpdate({});
-  }, [createForeignKeyEdges, createLlmRelationEdges]);
+  }, [createForeignKeyEdges]);
 
   useEffect(() => {
     loadMetadata();
-    loadLlmRelations();
-  }, [loadMetadata, loadLlmRelations]);
+  }, [loadMetadata]);
 
   // 主题变化时重新初始化图表
   useEffect(() => {
@@ -999,28 +813,7 @@ export default function SchemaVisualizer({ connectionId, database, schema }: Sch
         
         <div className="h-4 w-px bg-[var(--border)]" />
         
-        {/* 旧的 LLM 分析按钮 */}
-        <button 
-          className="btn-ghost py-1 px-2 text-xs text-purple-400" 
-          onClick={refreshLlmRelations} 
-          disabled={llmLoading} 
-          title="AI 分析表关系（单轮）"
-        >
-          {llmLoading ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
-          <span className="ml-1">AI 分析{hasLlmCache && ' ✓'}</span>
-        </button>
-        
-        {/* Harness 多阶段分析按钮 */}
-        <button 
-          className="btn-ghost py-1 px-2 text-xs text-pink-400 hover:text-pink-300" 
-          onClick={() => setShowHarnessPanel(true)}
-          title="Harness 多阶段 AI 分析（自动检测表关系）"
-        >
-          <Sparkles size={14} />
-          <span className="ml-1">深度分析</span>
-        </button>
-        
-        <button className="btn-ghost py-1 px-2 text-xs" onClick={loadMetadata} disabled={loading} title="刷新元数据">
+        <button className="btn-ghost py-1 px-2 text-xs" onClick={loadMetadata} disabled={loading} title="刷新">
           {loading ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
           <span className="ml-1">刷新</span>
         </button>
@@ -1061,19 +854,6 @@ export default function SchemaVisualizer({ connectionId, database, schema }: Sch
 
       {/* 主内容区 */}
       <div className="flex-1 flex overflow-hidden">
-        {/* Harness 分析面板（侧边） */}
-        {showHarnessPanel && (
-          <div className="w-96 flex-shrink-0 border-r border-[var(--border)]">
-            <HarnessAnalysisPanel
-              connectionId={connectionId}
-              database={database}
-              schema={schema}
-              onClose={() => setShowHarnessPanel(false)}
-              onRelationsFound={handleHarnessRelationsFound}
-            />
-          </div>
-        )}
-        
         {/* 图区域 */}
         <div className="flex-1 relative">
           <div ref={containerRef} className={`w-full h-full ${isDark ? 'bg-[#0f172a]' : 'bg-[#f8fafc]'}`} />
@@ -1098,17 +878,7 @@ export default function SchemaVisualizer({ connectionId, database, schema }: Sch
                 <span className={`inline-block w-5 h-0 border-t-2 ${isDark ? 'border-[#6b7280]' : 'border-gray-400'}`} />
                 <span>外键关系</span>
               </div>
-              <div className="flex items-center gap-2">
-                <span className="inline-block w-5 h-0 border-t-2 border-dashed border-[#a855f7]" />
-                <span>AI 推测关系</span>
-              </div>
             </div>
-            {llmRelations.length > 0 && (
-              <div className={`mt-2 pt-1.5 border-t ${isDark ? 'border-[#334155] text-purple-400' : 'border-gray-200 text-purple-600'}`}>
-                AI 发现 {llmRelations.length} 个关系
-                {hasLlmCache && <span className="ml-1 text-green-500">✓ 已缓存</span>}
-              </div>
-            )}
           </div>
           
           {loading && (
@@ -1132,14 +902,6 @@ export default function SchemaVisualizer({ connectionId, database, schema }: Sch
             </div>
           )}
           
-          {llmError && (
-            <div className="absolute top-20 left-3 right-3 max-w-md mx-auto">
-              <div className="px-3 py-2 bg-purple-500/10 border border-purple-500/30 rounded-lg text-purple-400 text-xs">
-                <p className="font-medium mb-1">AI 分析失败</p>
-                <p>{llmError}</p>
-              </div>
-            </div>
-          )}
         </div>
 
         {/* 详情面板 */}
